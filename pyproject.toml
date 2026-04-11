@@ -1,6 +1,26 @@
 [project]
-name = "meeting-intelligence-project-automation-agent"
+name = "meeting-intelligence"
 version = "0.1.0"
-description = "Add your description here"
-requires-python = ">=3.13"
-dependencies = []
+description = "Meeting transcript to project automation pipeline with human-in-the-loop approvals"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.4.0",
+    "langchain-core>=0.3.0",
+    "langchain-ollama>=0.3.0",
+    "langchain-openai>=0.3.0",
+    "litellm>=1.50.0",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0.0",
+    "langgraph-cli[inmem]>=0.4.21",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8.0",
+]
+server = [
+    "langgraph-cli>=0.1.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+]
