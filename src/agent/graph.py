@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
+from agent.config import settings
 from agent.nodes.clarify import generate_questions, process_answer
 from agent.nodes.jira_sync import sync_to_jira
 from agent.nodes.parse import apply_corrections, parse_transcript
@@ -133,7 +134,8 @@ def review_jira(state: PipelineState) -> Command[Literal["sync_to_jira", "__end_
     """Show Jira preview and ask for confirmation before writing."""
     tasks = state["tasks"]
     sprints = state["sprints"]
-    cfg = state.get("jira_config", {})
+    # Prefer state config, fall back to env vars
+    cfg = state.get("jira_config") or settings.jira_config_from_env
 
     user_input = interrupt({
         "stage": "jira",

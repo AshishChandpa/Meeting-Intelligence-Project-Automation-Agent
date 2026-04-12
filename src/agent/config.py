@@ -34,6 +34,32 @@ class Settings:
         default_factory=lambda: os.getenv("GEMINI_API_KEY", "")
     )
 
+    # Jira (optional — can also be set via state at runtime)
+    jira_domain: str = field(
+        default_factory=lambda: os.getenv("JIRA_DOMAIN", "")
+    )
+    jira_email: str = field(
+        default_factory=lambda: os.getenv("JIRA_EMAIL", "")
+    )
+    jira_api_token: str = field(
+        default_factory=lambda: os.getenv("JIRA_API_TOKEN", "")
+    )
+    jira_project_key: str = field(
+        default_factory=lambda: os.getenv("JIRA_PROJECT_KEY", "")
+    )
+
+    @property
+    def jira_config_from_env(self) -> dict:
+        """Return Jira config dict if all env vars are set, else empty dict."""
+        if all([self.jira_domain, self.jira_email, self.jira_api_token, self.jira_project_key]):
+            return {
+                "domain": self.jira_domain,
+                "email": self.jira_email,
+                "api_token": self.jira_api_token,
+                "project_key": self.jira_project_key,
+            }
+        return {}
+
     @property
     def litellm_model(self) -> str:
         """Return the model string LiteLLM expects."""
