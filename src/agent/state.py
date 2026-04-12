@@ -1,4 +1,4 @@
-"""LangGraph state schema for the meeting intelligence pipeline."""
+"""LangGraph state schema for the full meeting intelligence pipeline."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from langgraph.graph import MessagesState
 
 
-# ── Pydantic models for structured extraction ──────────────────────────
+# ── Stage 1: Extraction models ─────────────────────────────────────────
 
 class Module(BaseModel):
     name: str
@@ -44,7 +44,7 @@ class Assumption(BaseModel):
 
 class Unknown(BaseModel):
     description: str
-    source: str = ""  # what part of transcript referenced it
+    source: str = ""
 
 
 class Extraction(BaseModel):
@@ -60,23 +60,107 @@ class Extraction(BaseModel):
     unknowns: list[Unknown] = Field(default_factory=list)
 
 
+# ── Stage 2: Clarification models ─────────────────────────────────────
+
+class ClarificationQuestion(BaseModel):
+    id: str                        # e.g. "q1"
+    question: str
+    context: str                   # why this is being asked / transcript ref
+    status: Literal["open", "answered", "skipped"] = "open"
+    answer: str = ""
+    skip_reason: str = ""
+
+
+class ClarificationQuestions(BaseModel):
+    """Structured output: list of clarification questions."""
+    questions: list[ClarificationQuestion] = Field(default_factory=list)
+
+
+# ── Stage 3: Scope of Work models ─────────────────────────────────────
+
+class SoWRevision(BaseModel):
+    version: int
+    feedback: str
+    changelog: str                 # bullet summary of what changed
+
+
+# ── Stage 4: Sprint planning models ───────────────────────────────────
+
+class Task(BaseModel):
+    id: str                        # e.g. "t1"
+    title: str
+    description: str
+    module: str
+    type: Literal["Epic", "Story", "Task"]
+    priority: Literal["High", "Medium", "Low"]
+    story_points: Literal[1, 2, 3, 5, 8, 13]
+    dependencies: list[str] = Field(default_factory=list)   # task ids
+    acceptance_criteria: list[str] = Field(default_factory=list)
+
+
+class Sprint(BaseModel):
+    name: str                      # e.g. "Sprint 1 — Returns Core"
+    goal: str
+    task_ids: list[str] = Field(default_factory=list)
+    total_points: int = 0
+
+
+class SprintPlan(BaseModel):
+    """Structured output from Stage 4."""
+    tasks: list[Task] = Field(default_factory=list)
+    sprints: list[Sprint] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)  # e.g. sprint over 40pts
+
+
+# ── Stage 5: Jira models ───────────────────────────────────────────────
+
+class JiraConfig(BaseModel):
+    domain: str       # e.g. "mycompany.atlassian.net"
+    email: str
+    api_token: str
+    project_key: str  # e.g. "PROJ"
+
+
+class JiraResult(BaseModel):
+    type: str         # "epic" | "issue" | "sprint"
+    key: str          # e.g. "PROJ-1"
+    title: str
+    url: str
+    status: Literal["created", "failed"] = "created"
+    error: str = ""
+
+
 # ── Pipeline state ─────────────────────────────────────────────────────
 
 class PipelineState(MessagesState):
-    """Full state carried through the LangGraph pipeline.
-
-    For now, only Stage 1 fields are active.
-    We'll add Stage 2-5 fields as we build them.
-    """
+    """Full state carried through the LangGraph pipeline."""
 
     # ── Stage tracking ──
-    current_stage: str = "parse"  # parse | clarify | sow | sprint | jira | done
+    current_stage: str = "parse"   # parse | clarify | sow | sprint | jira | done
 
     # ── Stage 1: Transcript Parsing ──
     raw_transcript: str = ""
-    extraction: dict = Field(default_factory=dict)  # Extraction model as dict
+    extraction: dict = Field(default_factory=dict)
     correction_history: Annotated[list[dict], operator.add] = Field(default_factory=list)
     stage1_approved: bool = False
 
-    # Placeholder fields for future stages (added incrementally)
-    # stage2, stage3, etc. will be added when we build those stages
+    # ── Stage 2: Clarification Loop ──
+    questions: list[dict] = Field(default_factory=list)   # list[ClarificationQuestion]
+    stage2_approved: bool = False
+
+    # ── Stage 3: Scope of Work ──
+    sow: str = ""                  # markdown text
+    sow_version: int = 0
+    sow_revisions: Annotated[list[dict], operator.add] = Field(default_factory=list)
+    stage3_approved: bool = False
+
+    # ── Stage 4: Sprint Planning ──
+    tasks: list[dict] = Field(default_factory=list)       # list[Task]
+    sprints: list[dict] = Field(default_factory=list)     # list[Sprint]
+    sprint_warnings: list[str] = Field(default_factory=list)
+    stage4_approved: bool = False
+
+    # ── Stage 5: Jira ──
+    jira_config: dict = Field(default_factory=dict)       # JiraConfig
+    jira_results: Annotated[list[dict], operator.add] = Field(default_factory=list)
+    stage5_done: bool = False
