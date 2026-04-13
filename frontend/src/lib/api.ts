@@ -61,6 +61,11 @@ export async function submitStage1Feedback(
   return response.data
 }
 
+export async function autoCorrectStage1(projectId: string): Promise<{ message: string; extraction: any; validation_passed: boolean }> {
+  const response = await api.post(`/api/projects/${projectId}/stage/parse/auto-correct`)
+  return response.data
+}
+
 // ── Stage 2: Clarification ──────────────────────────────────────────────────
 
 export async function answerQuestion(

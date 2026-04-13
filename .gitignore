@@ -209,3 +209,4 @@ __marimo__/
 .idea/
 .langgraph_api
 */node_modules/*
+*/docs/*

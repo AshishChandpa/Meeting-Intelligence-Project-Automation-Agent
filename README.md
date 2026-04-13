@@ -240,7 +240,7 @@ The frontend will be available at `http://localhost:5173`.
 
 ## Jira Configuration
 
-📖 **For detailed step-by-step instructions, see [JIRA_SETUP.md](./JIRA_SETUP.md)**
+📖 **For detailed step-by-step instructions, see [JIRA_SETUP.md](docs/JIRA_SETUP.md)**
 
 ### Quick Setup
 
