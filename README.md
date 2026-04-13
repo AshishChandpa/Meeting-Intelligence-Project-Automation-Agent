@@ -1,8 +1,6 @@
 # Meeting Intelligence & Project Automation Agent
 
-An AI-powered pipeline that converts client meeting transcripts into structured project execution — with a human approval gate at every stage. Upload a transcript and the system walks you through requirement extraction, clarification Q&A, Scope of Work drafting, sprint planning, and Jira sync.
-
----
+An AI-powered web application that converts client meeting transcripts into structured project execution — with a human approval gate at every stage. Upload a transcript and the system walks you through requirement extraction, clarification Q&A, Scope of Work drafting, sprint planning, and Jira sync.
 
 ## Pipeline Overview
 
@@ -47,13 +45,15 @@ Each stage is a distinct node in a LangGraph state machine. Nothing advances wit
 
 | Layer | Choice |
 |-------|--------|
+| Backend | FastAPI (Python 3.11+) |
+| Frontend | React 18 + TypeScript + Tailwind CSS + Vite |
 | Orchestration | LangGraph (StateGraph with human-in-the-loop interrupts) |
 | LLM (local) | Ollama — `llama3.2:3b` recommended on M4 Mac |
 | LLM (cloud) | OpenAI / Anthropic / Gemini via LiteLLM (configurable) |
 | Structured output | `langchain-ollama` with `with_structured_output()` |
 | Jira integration | Atlassian REST API v3 + Agile API via `httpx` |
-| State persistence | LangGraph built-in checkpointing (`.langgraph_api/`) |
-| Dev UI | LangGraph Studio (`uv run langgraph dev`) |
+| State persistence | In-memory for demo (MongoDB planned for production) |
+| State management (frontend) | Zustand |
 
 ---
 
@@ -61,25 +61,42 @@ Each stage is a distinct node in a LangGraph state machine. Nothing advances wit
 
 ```
 meeting-intelligence/
-├── src/agent/
-│   ├── config.py              # Settings loaded from .env
-│   ├── llm.py                 # Ollama client with structured output
-│   ├── jira.py                # Jira REST API client
-│   ├── state.py               # Full pipeline state + Pydantic models
-│   ├── graph.py               # LangGraph StateGraph (all 5 stages)
-│   ├── nodes/
-│   │   ├── parse.py           # Stage 1: transcript parsing + corrections
-│   │   ├── clarify.py         # Stage 2: question generation + answers
-│   │   ├── sow.py             # Stage 3: SoW drafting + revision
-│   │   ├── sprint.py          # Stage 4: task breakdown + sprint planning
-│   │   └── jira_sync.py       # Stage 5: Jira Epic/Issue/Sprint creation
-│   └── prompts/
-│       ├── extraction.py      # Stage 1 prompts
-│       ├── clarification.py   # Stage 2 prompts
-│       ├── sow.py             # Stage 3 prompts
-│       └── sprint.py          # Stage 4 prompts
+├── src/
+│   ├── agent/                 # LangGraph pipeline
+│   │   ├── config.py          # Settings loaded from .env
+│   │   ├── llm.py             # LLM client (Ollama / OpenAI / Anthropic / Gemini)
+│   │   ├── jira.py            # Jira REST API client
+│   │   ├── state.py           # Pipeline state + Pydantic models
+│   │   ├── graph.py           # LangGraph StateGraph (all 5 stages)
+│   │   ├── nodes/             # Stage nodes
+│   │   │   ├── parse.py       # Stage 1: transcript parsing + corrections
+│   │   │   ├── clarify.py     # Stage 2: question generation + answers
+│   │   │   ├── sow.py         # Stage 3: SoW drafting + revision
+│   │   │   ├── sprint.py      # Stage 4: task breakdown + sprint planning
+│   │   │   └── jira_sync.py   # Stage 5: Jira Epic/Issue/Sprint creation
+│   │   └── prompts/           # LLM prompts for each stage
+│   └── api/                   # FastAPI backend
+│       └── main.py            # REST API endpoints
+├── frontend/                  # React frontend
+│   ├── src/
+│   │   ├── components/        # React components
+│   │   │   ├── ui/            # Shared UI components
+│   │   │   ├── stages/        # Per-stage components
+│   │   │   ├── ProjectSwitcher.tsx
+│   │   │   └── StageProgress.tsx
+│   │   ├── lib/               # Utilities
+│   │   │   ├── api.ts         # API client functions
+│   │   │   └── utils.ts       # Helper functions
+│   │   ├── store/             # State management
+│   │   │   └── projectStore.ts # Zustand store
+│   │   ├── types/             # TypeScript types
+│   │   │   └── index.ts
+│   │   ├── App.tsx            # Main app component
+│   │   └── main.tsx           # Entry point
+│   ├── package.json
+│   └── vite.config.ts
 ├── langgraph.json             # LangGraph CLI config
-├── pyproject.toml             # Dependencies (managed with uv)
+├── pyproject.toml             # Python dependencies
 ├── .env                       # Your local config (gitignored)
 ├── .env.example               # Template — copy to .env
 └── README.md
@@ -92,15 +109,20 @@ meeting-intelligence/
 ### Prerequisites
 
 - Python 3.11+
-- [uv](https://docs.astral.sh/uv/) — `brew install uv`
+- [uv](https://docs.astral.sh/uv/) — `brew install uv` or `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - [Ollama](https://ollama.com) — `brew install ollama`
+- Node.js 18+ — `brew install node`
 
 ### 1. Clone and install
 
 ```bash
-git clone <repo-url>
-cd meeting-intelligence
+# Install Python dependencies
 uv sync
+
+# Install frontend dependencies
+cd frontend
+npm install
+cd ..
 ```
 
 ### 2. Pull a local model
@@ -115,7 +137,7 @@ ollama pull llama3.2:3b
 ollama pull llama3.1:8b
 ```
 
-> **Note:** Base `mistral` works but is weaker at structured JSON tasks. Use `llama3.2:3b` for reliable extractions.
+> **Note:** Base `mistral` works but is weaker at structured JSON tasks. Use `llama3.2:3b` for reliable Stage 1 output.
 
 ### 3. Configure environment
 
@@ -144,42 +166,75 @@ OPENAI_API_KEY=sk-...
 ollama serve
 ```
 
-### 5. Run the dev server
+### 5. Start the backend
 
 ```bash
-uv run langgraph dev
+# From the project root
+uv run uvicorn src.api.main:app --reload --port 8000
 ```
 
-This starts the LangGraph API server at `http://127.0.0.1:2024` and opens LangGraph Studio at `https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024`.
+The API will be available at `http://127.0.0.1:8000`.
+
+### 6. Start the frontend
+
+In a new terminal:
+
+```bash
+cd frontend
+npm run dev
+```
+
+The frontend will be available at `http://localhost:5173`.
 
 ---
 
-## Using the Pipeline
+## Using the Application
 
-### In LangGraph Studio
+### 1. Create a Project
 
-1. Open the Studio URL printed in your terminal
-2. Click **"Server connection settings"** and confirm the URL is `http://127.0.0.1:2024`
-3. Select the `meeting_pipeline` graph
-4. Create a new run with this input:
+1. Open `http://localhost:5173` in your browser
+2. Click the project switcher dropdown
+3. Click "New Project"
+4. Enter a project name
+5. Paste your meeting transcript
+6. Click "Create"
 
-```json
-{
-  "raw_transcript": "paste your meeting transcript here..."
-}
-```
+### 2. Stage 1: Parse & Extract
 
-5. The pipeline pauses at each stage for your review — respond to the interrupt prompts to advance
+- Review the extracted modules, requirements, integrations, constraints, and unknowns
+- Each field shows a confidence indicator (high/medium/low)
+- Type corrections in plain language (e.g., "Add a module for User Authentication")
+- Click "Approve & Continue" when satisfied
 
-### Human gate interactions
+### 3. Stage 2: Clarification Loop
 
-| Stage | To approve | To correct / adjust |
-|-------|-----------|-------------------|
-| Stage 1 (Extraction) | Type `approve` | Type a plain-language correction |
-| Stage 2 (Clarify) | Type `done` | Type `q1: your answer` or `q1: skip reason` |
-| Stage 3 (SoW) | Type `approve` (after ≥1 feedback round) | Type feedback in plain text |
-| Stage 4 (Sprint Plan) | Type `approve` | Describe the adjustment in plain text |
-| Stage 5 (Jira) | Type `confirm` | Set Jira config in `.env` first |
+- AI generates targeted questions based on gaps in the transcript
+- Answer questions in plain text, or skip with a reason
+- Click "Done & Continue to SoW" when satisfied
+
+### 4. Stage 3: Scope of Work
+
+- Review the AI-drafted SoW
+- Provide feedback in plain text (at least one round required)
+- AI will revise and show a changelog
+- Click "Approve & Continue" when satisfied
+- You can download the SoW as a Markdown file
+
+### 5. Stage 4: Sprint Planning
+
+- Review the generated tasks and sprints
+- Each task has story points, dependencies, and acceptance criteria
+- Warnings are shown if sprints exceed 40 points
+- Request adjustments in plain text if needed
+- Click "Approve & Continue to Jira" when satisfied
+
+### 6. Stage 5: Jira Integration
+
+- Enter your Jira credentials (domain, email, API token, project key)
+- Click "Test Connection" to verify
+- Preview what will be created (epics, issues, sprints)
+- Click "Sync to Jira" to create everything
+- View results with direct links to each created issue
 
 ---
 
@@ -198,7 +253,7 @@ Sign up at [atlassian.com](https://www.atlassian.com) — no credit card require
 
 Go to [id.atlassian.com/manage-api-tokens](https://id.atlassian.com/manage-api-tokens) → **Create API token**
 
-### 4. Add to `.env`
+### 4. Add to `.env` or the UI
 
 ```env
 JIRA_DOMAIN=yourcompany.atlassian.net
@@ -246,28 +301,55 @@ JIRA_PROJECT_KEY=MIP
 
 **`langchain-ollama` with `with_structured_output()`** — Rather than prompting the model to return JSON and hoping it complies, `with_structured_output()` uses Ollama's native schema-constrained decoding. This makes structured extraction reliable even on smaller models.
 
-**LiteLLM as a cloud fallback** — For cloud providers (OpenAI, Anthropic, Gemini), we route through LiteLLM so switching providers is a single env var change with no code changes.
+**FastAPI + React** — FastAPI provides async support and automatic OpenAPI docs. React with TypeScript gives us type safety and a great developer experience. Zustand for state management keeps things simple without Redux overhead.
 
-**Plain `httpx` for Jira** — The Jira Python SDK adds significant overhead and version fragility. The REST API is simple enough to call directly with `httpx`, and it gives us full control over retry and error handling.
-
-**Single `PipelineState` TypedDict** — All stage data lives in one state object that flows through the entire graph. Each stage reads what it needs and writes its output. This makes the data flow explicit and easy to inspect in LangGraph Studio.
+**Single `PipelineState` TypedDict** — All stage data lives in one state object that flows through the entire graph. Each stage reads what it needs and writes its output. This makes the data flow explicit and easy to debug.
 
 ---
 
 ## Known Limitations
 
 - **Local model quality** — Base `mistral` produces weak structured extractions. Use `llama3.2:3b` or higher for reliable Stage 1 output.
-- **Frontend not yet built** — Currently testable via LangGraph Studio only. A React + FastAPI frontend is planned.
+- **State persistence** — Currently using in-memory storage. For production use, MongoDB or PostgreSQL should be added for persistent state.
 - **Jira Scrum board required** — Sprint creation via the Agile API requires a Scrum-type board. Kanban-only projects won't support Stage 5 sprints.
 - **Long transcripts** — Very long transcripts (>8k tokens) may hit context limits on smaller local models. Chunking support is planned.
-- **No multi-project support in Studio** — LangGraph Studio runs one thread at a time. Multi-project switching will be part of the frontend.
+- **No real-time streaming** — AI responses are shown when complete, not streamed. SSE streaming can be added for better UX.
+
+---
+
+## Development
+
+### Running tests
+
+```bash
+# Backend tests (when implemented)
+uv run pytest
+
+# Frontend tests (when implemented)
+cd frontend
+npm test
+```
+
+### Building for production
+
+```bash
+# Build frontend
+cd frontend
+npm run build
+
+# The build output will be in frontend/dist/
+# Serve this with your FastAPI backend or a CDN
+```
 
 ---
 
 ## What's Remaining
 
-- [ ] Fix extraction for local models — pull `llama3.2:3b` and test
-- [ ] React frontend (project switcher, per-stage UI, approval buttons)
-- [ ] FastAPI wrapper exposing the graph as REST + SSE endpoints
-- [ ] End-to-end test with the provided client transcripts
-- [ ] Screen recording (2-3 min): full pipeline with approval gates + Jira sync
+- [ ] Add MongoDB for persistent state storage
+- [ ] Implement SSE streaming for real-time AI output
+- [ ] Add transcript chunking for long inputs
+- [ ] Add end-to-end tests
+- [ ] Create screen recording demo
+- [ ] Add more comprehensive error handling
+- [ ] Add user authentication
+- [ ] Add more export formats (PDF, DOCX)
