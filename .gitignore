@@ -210,3 +210,5 @@ __marimo__/
 .langgraph_api
 */node_modules/*
 */docs/*
+
+./docs

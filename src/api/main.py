@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from agent.config import settings
-from agent.nodes.parse import apply_corrections, auto_correct_extraction, parse_transcript, validate_extraction
+from agent.nodes.parse import apply_corrections, parse_transcript
 from agent.nodes.clarify import generate_questions, process_answer
 from agent.nodes.sow import draft_sow, revise_sow
 from agent.nodes.sprint import generate_sprint_plan, adjust_sprint_plan
@@ -150,22 +150,17 @@ async def create_project(request: CreateProjectRequest):
         "jira_config": None,
     }
 
-    # Run Stage 1: Parse transcript and validate
+    # Run Stage 1: Parse transcript
     try:
         parse_state = project["state"].copy()
 
-        # Step 1: Parse transcript
+        # Parse transcript
         result = parse_transcript(parse_state)
         project["state"].update(result)
 
-        # Step 2: Validate extraction
-        validate_state = project["state"].copy()
-        validation_result = validate_extraction(validate_state)
-        project["state"].update(validation_result)
-
         projects[project_id] = project
 
-        logger.info("Created project %s and completed parsing + validation", project_id)
+        logger.info("Created project %s and completed parsing", project_id)
 
         return CreateProjectResponse(
             project_id=project_id,
@@ -270,38 +265,6 @@ async def submit_stage1_feedback(project_id: str, request: FeedbackRequest):
 
     except Exception as e:
         logger.exception("Failed to apply correction")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/projects/{project_id}/stage/parse/auto-correct")
-async def auto_correct_stage1(project_id: str):
-    """Apply automatic corrections based on validation errors."""
-    project = get_project(project_id)
-
-    # Only allow auto-correct if validation failed
-    if project["state"].get("validation_passed", False):
-        raise HTTPException(
-            status_code=400,
-            detail="Auto-correction only available when validation has failed"
-        )
-
-    try:
-        state = project["state"].copy()
-        result = auto_correct_extraction(state)
-
-        # If no corrections were needed (validation already passed)
-        if not result:
-            return {"message": "No corrections needed - validation already passed"}
-
-        project["state"].update(result)
-        return {
-            "message": "Auto-correction applied",
-            "extraction": result.get("extraction"),
-            "validation_passed": result.get("validation_passed", False)
-        }
-
-    except Exception as e:
-        logger.exception("Failed to apply auto-correction")
         raise HTTPException(status_code=500, detail=str(e))
 
 

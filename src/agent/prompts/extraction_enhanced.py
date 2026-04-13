@@ -11,6 +11,7 @@ transcript. Your job is to:
 2. Identify ALL gaps, unknowns, and ambiguities
 3. Flag EVERY assumption you make with LOW confidence
 4. NEVER make up information - if unsure, mark as "unknown"
+5. **CRITICAL: Ensure NO duplicate requirements** - each requirement must be unique
 
 Confidence levels:
 - "high": directly and clearly stated in the transcript
@@ -27,11 +28,20 @@ CRITICAL RULES:
 - When in doubt, mark it as "low confidence" or add to "unknowns"
 - Over-extract with low confidence rather than miss something
 
+**ANTI-DUPLICATION RULES:**
+- Each requirement MUST be unique - no duplicates allowed
+- If similar functionality is mentioned multiple times, extract it ONCE
+- If the same requirement appears in different contexts, consolidate it
+- Check each requirement against existing ones before adding
+- Use specific, descriptive language to avoid overlap
+- Focus on WHAT needs to be built, not HOW many times it was mentioned
+
 For each module, ask yourself:
 - What EXACTLY does this module do? (If unclear → unknown)
 - What are the ACTUAL requirements? (If vague → unknown)
 - Are there deadlines? (If not stated → null, don't guess)
 - What are the integrations? (If unclear → unknown)
+- Have I already extracted this requirement? (If yes → skip duplicate)
 """
 
 EXTRACTION_USER = """\

@@ -96,7 +96,7 @@ export function ProjectSwitcher() {
       </Button>
 
       {isOpen && (
-        <div className="absolute z-50 mt-2 w-[500px] rounded-md border bg-popover p-4 shadow-md">
+        <div className="bg-card absolute z-50 mt-2 w-[500px] rounded-md border bg-popover p-4 shadow-md">
           <div className="mb-3 flex items-center justify-between">
             <h3 className="font-semibold">Projects</h3>
             <Button size="sm" variant="outline" onClick={() => setIsCreating(!isCreating)}>

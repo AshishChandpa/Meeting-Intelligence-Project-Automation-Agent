@@ -19,16 +19,21 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 
-def _get_chat_model():
-    """Return the appropriate LangChain chat model based on LLM_PROVIDER."""
+def _get_chat_model(temperature: float | None = None):
+    """Return the appropriate LangChain chat model based on LLM_PROVIDER.
+
+    Args:
+        temperature: Optional temperature override. If None, uses default 0.2.
+    """
     provider = settings.llm_provider
+    temp = temperature if temperature is not None else 0.2
 
     if provider == "ollama":
         from langchain_ollama import ChatOllama
         return ChatOllama(
             model=settings.ollama_model,
             base_url=settings.ollama_base_url,
-            temperature=0.2,
+            temperature=temp,
         )
 
     elif provider == "openai":
@@ -36,7 +41,7 @@ def _get_chat_model():
         return ChatOpenAI(
             model="gpt-4o",
             api_key=settings.openai_api_key,
-            temperature=0.2,
+            temperature=temp,
         )
 
     elif provider == "anthropic":
@@ -44,7 +49,7 @@ def _get_chat_model():
         return ChatAnthropic(
             model="claude-sonnet-4-20250514",
             api_key=settings.anthropic_api_key,
-            temperature=0.2,
+            temperature=temp,
         )
 
     elif provider == "gemini":
@@ -52,7 +57,7 @@ def _get_chat_model():
         return ChatGoogleGenerativeAI(
             model="gemini-2.0-flash",
             google_api_key=settings.gemini_api_key,
-            temperature=0.2,
+            temperature=temp,
         )
 
     else:
@@ -84,14 +89,22 @@ def complete_structured(prompt_messages: list[dict], schema: type[T]) -> T:
     return structured.invoke(lc_messages)
 
 
-def complete_text(prompt_messages: list[dict]) -> str:
+def complete_text(prompt_messages: list[dict], temperature: float | None = None) -> str:
     """Call the configured LLM and return plain text.
 
     Used for free-form generation (SoW drafts, follow-up responses, etc.)
+
+    Args:
+        prompt_messages: [{"role": "system"|"user"|"assistant", "content": str}]
+        temperature: Optional temperature override. Lower = more deterministic.
+
+    Returns:
+        Plain text response from the LLM.
     """
-    model = _get_chat_model()
+    model = _get_chat_model(temperature=temperature)
     lc_messages = [(msg["role"], msg["content"]) for msg in prompt_messages]
 
-    logger.info("Calling %s for text completion", settings.llm_provider)
+    temp_str = f" (temp={temperature})" if temperature is not None else ""
+    logger.info("Calling %s for text completion%s", settings.llm_provider, temp_str)
     response = model.invoke(lc_messages)
     return response.content

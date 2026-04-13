@@ -144,9 +144,6 @@ class PipelineState(MessagesState):
     correction_history: Annotated[list[dict], operator.add] = Field(default_factory=list)
     gap_questions: str = ""         # gap analysis from enhanced extraction
     preprocessing_context: dict = Field(default_factory=dict)  # preprocessed transcript structure
-    validation_result: str = ""     # validation errors found
-    validation_passed: bool = False # whether validation passed
-    correction_applied: bool = False # whether auto-correction was applied
     stage1_approved: bool = False
 
     # ── Stage 2: Clarification Loop ──

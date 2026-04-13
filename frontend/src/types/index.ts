@@ -132,9 +132,6 @@ export interface ProjectState {
   sprints?: Sprint[]
   sprint_warnings?: string[]
   jira_results?: JiraResult[]
-  validation_result?: string
-  validation_passed?: boolean
-  correction_applied?: boolean
   stage1_approved?: boolean
   stage2_approved?: boolean
   stage3_approved?: boolean

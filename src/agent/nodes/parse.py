@@ -16,11 +16,79 @@ from agent.prompts.extraction_enhanced import (
     GAP_ANALYSIS_SYSTEM,
     GAP_ANALYSIS_USER,
 )
-from agent.prompts.validation import AUTO_CORRECT_SYSTEM, AUTO_CORRECT_USER, VALIDATION_SYSTEM, VALIDATION_USER
 from agent.state import Extraction, PipelineState
 from agent.transcript_preprocessor import TranscriptPreprocessor
 
 logger = logging.getLogger(__name__)
+
+
+def deduplicate_requirements(extraction: dict) -> dict:
+    """Remove duplicate requirements from extraction.
+
+    This function deduplicates based on:
+    1. Exact description match
+    2. Same module + similar description (80% similarity threshold)
+    3. Same functional intent
+
+    Args:
+        extraction: The extraction dict with potential duplicates
+
+    Returns:
+        Cleaned extraction dict with unique requirements
+    """
+    requirements = extraction.get("requirements", [])
+    if not requirements:
+        return extraction
+
+    seen_descriptions = set()
+    unique_requirements = []
+    duplicates_removed = 0
+
+    for req in requirements:
+        desc = req.get("description", "").strip().lower()
+
+        # Check for exact match
+        if desc in seen_descriptions:
+            duplicates_removed += 1
+            continue
+
+        # Check for similar descriptions in same module
+        is_duplicate = False
+        req_module = req.get("module", "")
+        for seen_req in unique_requirements:
+            if (seen_req.get("module", "") == req_module and
+                _similarity(desc, seen_req.get("description", "").lower()) > 0.8):
+                duplicates_removed += 1
+                is_duplicate = True
+                break
+
+        if not is_duplicate:
+            seen_descriptions.add(desc)
+            unique_requirements.append(req)
+
+    if duplicates_removed > 0:
+        logger.info(f"Removed {duplicates_removed} duplicate requirements. "
+                   f"Original: {len(requirements)}, Unique: {len(unique_requirements)}")
+
+    extraction["requirements"] = unique_requirements
+    return extraction
+
+
+def _similarity(str1: str, str2: str) -> float:
+    """Calculate simple similarity ratio between two strings.
+
+    Uses a basic word overlap approach.
+    """
+    words1 = set(str1.split())
+    words2 = set(str2.split())
+
+    if not words1 or not words2:
+        return 0.0
+
+    intersection = words1.intersection(words2)
+    union = words1.union(words2)
+
+    return len(intersection) / len(union) if union else 0.0
 
 
 def parse_transcript(state: PipelineState) -> dict:
@@ -56,6 +124,13 @@ def parse_transcript(state: PipelineState) -> dict:
 
     validated: Extraction = complete_structured(messages, schema=Extraction)
 
+    # Apply deduplication to remove duplicate requirements
+    extraction_dict = validated.model_dump()
+    extraction_dict = deduplicate_requirements(extraction_dict)
+
+    # Re-validate the deduplication didn't break schema
+    validated = Extraction(**extraction_dict)
+
     # Store preprocessing context for later use
     return {
         "extraction": validated.model_dump(),
@@ -66,11 +141,11 @@ def parse_transcript(state: PipelineState) -> dict:
                 content=(
                     f"📊 Parsed transcript ({len(segments)} segments). "
                     f"Found {len(validated.modules)} modules, "
-                    f"{len(validated.requirements)} requirements, "
+                    f"{len(validated.requirements)} unique requirements, "
                     f"{len(validated.integrations)} integrations, "
                     f"{len(validated.unknowns)} unknowns. "
                     f"Identified {len(context.get('client_requirements', []))} client statements.\n\n"
-                    "⏳ Running validation to ensure accuracy..."
+                    "Please review the extraction and provide corrections if needed."
                 )
             )
         ],
@@ -150,115 +225,3 @@ def analyze_gaps(state: PipelineState) -> dict:
         ],
     }
 
-
-def validate_extraction(state: PipelineState) -> dict:
-    """Validate extraction accuracy by comparing to original transcript.
-
-    This uses low temperature for strict validation to catch:
-    - Wrong names (Client instead of AI Money)
-    - Wrong values (null instead of actual numbers)
-    - Missing details (competitors, integrations)
-    - Generic placeholders (API integration instead of Domain API)
-
-    Returns validation report with errors found.
-    """
-    transcript = state["raw_transcript"]
-    extraction = state["extraction"]
-
-    logger.info("Validating extraction accuracy...")
-
-    messages = [
-        {"role": "system", "content": VALIDATION_SYSTEM},
-        {
-            "role": "user",
-            "content": VALIDATION_USER.format(
-                transcript=transcript,
-                extraction=json.dumps(extraction, indent=2),
-            ),
-        },
-    ]
-
-    # Use low temperature (0.1) for strict, deterministic validation
-    validation_result = complete_text(messages, temperature=0.1)
-
-    logger.info("Validation complete")
-
-    # Check if validation passed
-    validation_passed = "✓ EXTRACTION VALIDATED" in validation_result or "NO ERRORS" in validation_result.upper()
-
-    return {
-        "validation_result": validation_result,
-        "validation_passed": validation_passed,
-        "messages": [
-            AIMessage(
-                content=(
-                    f"{'✅ Extraction validated successfully - No errors found' if validation_passed else '⚠️ Validation found errors - Review below:'}\n\n"
-                    f"{validation_result}\n\n"
-                    f"{'Please review the extraction and approve or provide corrections.' if not validation_passed else 'Extraction is accurate and ready for review.'}"
-                )
-            )
-        ],
-    }
-
-
-def auto_correct_extraction(state: PipelineState) -> dict:
-    """Auto-correct extraction based on validation errors.
-
-    This applies the corrections identified during validation to produce
-    a corrected extraction without user intervention.
-    """
-    if state.get("validation_passed", False):
-        # No corrections needed
-        return {}
-
-    logger.info("Auto-correcting extraction based on validation...")
-
-    messages = [
-        {"role": "system", "content": AUTO_CORRECT_SYSTEM},
-        {
-            "role": "user",
-            "content": AUTO_CORRECT_USER.format(
-                extraction=json.dumps(state["extraction"], indent=2),
-                validation_errors=state["validation_result"],
-            ),
-        },
-    ]
-
-    # Use low temperature (0.1) for precise corrections
-    corrected_extraction_json = complete_text(messages, temperature=0.1)
-
-    # Parse the JSON response
-    try:
-        corrected_extraction = json.loads(corrected_extraction_json)
-        validated: Extraction = Extraction(**corrected_extraction)
-    except Exception as e:
-        logger.error(f"Failed to parse corrected extraction: {e}")
-        # If auto-correction fails, return empty and let user handle
-        return {
-            "messages": [
-                AIMessage(
-                    content=(
-                        "⚠️ Auto-correction encountered an error. "
-                        "Please review the validation errors and provide corrections manually."
-                    )
-                )
-            ],
-        }
-
-    logger.info("Auto-correction complete")
-
-    return {
-        "extraction": validated.model_dump(),
-        "validation_passed": True,  # Assume corrections fixed the issues
-        "correction_applied": True,
-        "messages": [
-            AIMessage(
-                content=(
-                    "✅ Auto-correction applied successfully. "
-                    f"The extraction has been updated with {len(validated.modules)} modules, "
-                    f"{len(validated.requirements)} requirements. "
-                    "Please review and approve or provide further corrections."
-                )
-            )
-        ],
-    }

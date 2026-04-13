@@ -19,7 +19,7 @@ from langgraph.types import Command, interrupt
 from agent.config import settings
 from agent.nodes.clarify import generate_questions, process_answer
 from agent.nodes.jira_sync import sync_to_jira
-from agent.nodes.parse import apply_corrections, auto_correct_extraction, parse_transcript, validate_extraction
+from agent.nodes.parse import apply_corrections, parse_transcript
 from agent.nodes.sow import draft_sow, revise_sow
 from agent.nodes.sprint import adjust_sprint_plan, generate_sprint_plan
 from agent.state import PipelineState
@@ -27,40 +27,28 @@ from agent.state import PipelineState
 
 # ── Stage 1 human gate ─────────────────────────────────────────────────
 
-def review_extraction(state: PipelineState) -> Command[Literal["auto_correct_extraction", "apply_corrections", "stage1_done"]]:
+def review_extraction(state: PipelineState) -> Command[Literal["apply_corrections", "stage1_done"]]:
     """Pause for human review of the transcript extraction.
 
     User can:
-    - 'approve' - proceed if validation passed
-    - 'auto-correct' - apply auto-corrections if validation failed
+    - 'approve' - proceed to next stage
     - Provide manual correction text
     """
-    validation_passed = state.get("validation_passed", False)
-    validation_result = state.get("validation_result", "")
-
     user_input = interrupt({
         "stage": "parse",
         "message": (
-            f"{'✅ Validation passed' if validation_passed else '⚠️ Validation failed - See errors below'}\n\n"
-            f"{validation_result}\n\n"
+            "Please review the extraction.\n\n"
             "Options:\n"
-            "- Type 'approve' to continue (if validation passed)\n"
-            "- Type 'auto-correct' to apply automatic fixes\n"
-            "- Type your own corrections to specify changes manually"
+            "- Type 'approve' to continue to next stage\n"
+            "- Type your own corrections to specify changes"
         ),
         "extraction": state["extraction"],
-        "validation_passed": validation_passed,
-        "validation_result": validation_result,
     })
 
     input_str = str(user_input).strip().lower()
 
-    # Auto-correct command
-    if input_str == "auto-correct":
-        return Command(goto="auto_correct_extraction")
-
-    # Approve command (only if validation passed)
-    if input_str == "approve" and validation_passed:
+    # Approve command
+    if input_str == "approve":
         return Command(goto="stage1_done")
 
     # Manual correction
@@ -201,9 +189,7 @@ def build_graph() -> StateGraph:
 
     # Stage 1
     builder.add_node("parse_transcript", parse_transcript)
-    builder.add_node("validate_extraction", validate_extraction)
     builder.add_node("review_extraction", review_extraction)
-    builder.add_node("auto_correct_extraction", auto_correct_extraction)
     builder.add_node("apply_corrections", apply_corrections)
     builder.add_node("stage1_done", stage1_done)
 
@@ -234,10 +220,8 @@ def build_graph() -> StateGraph:
     # Entry
     builder.set_entry_point("parse_transcript")
 
-    # Stage 1 flow: parse → validate → review → (auto-correct | manual correct) → review → stage1_done
-    builder.add_edge("parse_transcript", "validate_extraction")
-    builder.add_edge("validate_extraction", "review_extraction")
-    builder.add_edge("auto_correct_extraction", "review_extraction")
+    # Stage 1 flow: parse → review → (manual correct) → review → stage1_done
+    builder.add_edge("parse_transcript", "review_extraction")
     builder.add_edge("apply_corrections", "review_extraction")
     builder.add_edge("stage1_done", "generate_questions")
 

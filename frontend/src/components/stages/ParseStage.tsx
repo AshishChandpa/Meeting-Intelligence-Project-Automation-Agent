@@ -1,11 +1,11 @@
 import { useState } from 'react'
 import { useProjectStore } from '@/store/projectStore'
-import { getProject, submitStage1Feedback, approveStage1, autoCorrectStage1 } from '@/lib/api'
+import { getProject, submitStage1Feedback, approveStage1 } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card'
 import { Button } from '../ui/Button'
 import { Textarea } from '../ui/Textarea'
 import { Badge } from '../ui/Badge'
-import { Loader2, CheckCircle2, XCircle, AlertCircle } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import type { Extraction, Module, Requirement } from '@/types'
 
 export function ParseStage() {
@@ -16,8 +16,6 @@ export function ParseStage() {
   if (!currentProject?.extraction) return null
 
   const extraction = currentProject.extraction as Extraction
-  const validationPassed = currentProject.validation_passed
-  const validationResult = currentProject.validation_result || ''
 
   const handleSubmitFeedback = async () => {
     if (!feedback.trim() || !currentProject) return
@@ -31,23 +29,6 @@ export function ParseStage() {
       setFeedback('')
     } catch (error: any) {
       setError(`Failed to submit feedback: ${error}`)
-    } finally {
-      setIsSubmitting(false)
-      setIsLoading(false)
-    }
-  }
-
-  const handleAutoCorrect = async () => {
-    if (!currentProject) return
-
-    try {
-      setIsSubmitting(true)
-      setIsLoading(true)
-      await autoCorrectStage1(currentProject.id)
-      const updated = await getProject(currentProject.id)
-      setCurrentProject(updated)
-    } catch (error: any) {
-      setError(`Failed to auto-correct: ${error}`)
     } finally {
       setIsSubmitting(false)
       setIsLoading(false)
@@ -77,29 +58,6 @@ export function ParseStage() {
         <CardTitle>Stage 1: Requirement Extraction</CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* Validation Status */}
-        {validationResult && (
-          <div className={`rounded-lg border p-4 ${
-            validationPassed
-              ? 'border-green-200 bg-green-50 dark:border-green-900 dark:bg-green-950'
-              : 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950'
-          }`}>
-            <div className="flex items-start gap-3">
-              {validationPassed ? (
-                <CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400 mt-0.5" />
-              ) : (
-                <XCircle className="h-5 w-5 text-red-600 dark:text-red-400 mt-0.5" />
-              )}
-              <div className="flex-1">
-                <h4 className={`font-semibold ${validationPassed ? 'text-green-900 dark:text-green-100' : 'text-red-900 dark:text-red-100'}`}>
-                  {validationPassed ? '✅ Validation Passed' : '⚠️ Validation Failed'}
-                </h4>
-                <pre className="mt-2 text-sm whitespace-pre-wrap">{validationResult}</pre>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Project Info */}
         <div className="grid grid-cols-3 gap-4">
           <div>
@@ -178,9 +136,35 @@ export function ParseStage() {
           <div>
             <h3 className="mb-3 text-lg font-semibold">Constraints ({extraction.constraints.length})</h3>
             <div className="space-y-2">
-              {extraction.constraints.map((constraint, i: number) => (
+              {extraction.constraints.map((constraint: any, i: number) => (
                 <div key={i} className="rounded-md border p-3">
-                  <p className="text-sm">{constraint.description}</p>
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm flex-1">{constraint.description}</p>
+                    <Badge variant={constraint.confidence || "medium"} className="shrink-0">
+                      {constraint.confidence || "medium"} confidence
+                    </Badge>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Assumptions */}
+        {extraction.assumptions && extraction.assumptions.length > 0 && (
+          <div>
+            <h3 className="mb-3 text-lg font-semibold text-blue-600 dark:text-blue-400">
+              Assumptions ({extraction.assumptions.length})
+            </h3>
+            <div className="space-y-2">
+              {extraction.assumptions.map((assumption: any, i: number) => (
+                <div key={i} className="rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-900 dark:bg-blue-950">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm flex-1">{assumption.description}</p>
+                    <Badge variant={assumption.confidence || "medium"} className="shrink-0">
+                      {assumption.confidence || "medium"} confidence
+                    </Badge>
+                  </div>
                 </div>
               ))}
             </div>
@@ -190,7 +174,7 @@ export function ParseStage() {
         {/* Unknowns */}
         {extraction.unknowns.length > 0 && (
           <div>
-            <h3 className="mb-3 text-lg font-semibold text-yellow-600">
+            <h3 className="mb-3 text-lg font-semibold text-yellow-600 dark:text-yellow-400">
               Unknowns ({extraction.unknowns.length})
             </h3>
             <div className="space-y-2">
@@ -211,42 +195,23 @@ export function ParseStage() {
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
           />
-          <div className="flex flex-col sm:flex-row justify-between gap-3">
-            <div className="flex gap-3">
-              <Button
-                onClick={handleSubmitFeedback}
-                disabled={!feedback.trim() || isSubmitting}
-                variant="secondary"
-              >
-                {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                Submit Correction
-              </Button>
-              {!validationPassed && (
-                <Button
-                  onClick={handleAutoCorrect}
-                  disabled={isSubmitting}
-                  variant="outline"
-                  className="border-blue-500 text-blue-600 hover:bg-blue-50"
-                >
-                  {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                  Auto-Correct
-                </Button>
-              )}
-            </div>
+          <div className="flex justify-between gap-3">
+            <Button
+              onClick={handleSubmitFeedback}
+              disabled={!feedback.trim() || isSubmitting}
+              variant="secondary"
+            >
+              {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Submit Correction
+            </Button>
             <Button
               onClick={handleApprove}
-              disabled={isSubmitting || !validationPassed}
+              disabled={isSubmitting}
             >
               {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Approve & Continue
             </Button>
           </div>
-          {!validationPassed && (
-            <p className="text-sm text-amber-600 dark:text-amber-400 flex items-center gap-2">
-              <AlertCircle className="h-4 w-4" />
-              Please fix validation errors before approving (use Auto-Correct or manual corrections)
-            </p>
-          )}
         </div>
       </CardContent>
     </Card>
