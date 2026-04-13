@@ -4,10 +4,15 @@ import { cn } from '@/lib/utils'
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'default' | 'primary' | 'secondary' | 'outline' | 'ghost' | 'destructive'
   size?: 'sm' | 'md' | 'lg'
+  asChild?: boolean
 }
 
 const Button = forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant = 'default', size = 'md', children, disabled, ...props }, ref) => {
+  ({ className, variant = 'default', size = 'md', children, disabled, asChild = false, ...props }, ref) => {
+    if (asChild) {
+      return <>{children}</>
+    }
+
     return (
       <button
         className={cn(

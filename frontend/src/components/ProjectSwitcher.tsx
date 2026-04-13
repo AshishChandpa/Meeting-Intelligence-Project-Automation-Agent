@@ -6,7 +6,6 @@ import { Button } from './ui/Button'
 import { Card } from './ui/Card'
 import { Input } from './ui/Input'
 import { Textarea } from './ui/Textarea'
-import type { ProjectListItem } from '@/types'
 
 export function ProjectSwitcher() {
   const { projects, currentProject, setProjects, setCurrentProject, addProject, removeProject, setIsLoading, setError } =

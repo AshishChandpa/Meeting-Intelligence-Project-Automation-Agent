@@ -4,7 +4,6 @@ import { getProject, setJiraConfig, testJiraConnection, getJiraPreview, syncToJi
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
-import { Badge } from '../ui/Badge'
 import { Loader2, ExternalLink, CheckCircle2, XCircle } from 'lucide-react'
 import type { JiraConfig, JiraResult } from '@/types'
 
@@ -74,7 +73,7 @@ export function JiraStage() {
 
     try {
       setIsSyncing(true)
-      const result = await syncToJira(currentProject.id)
+      await syncToJira(currentProject.id)
       const updated = await getProject(currentProject.id)
       setCurrentProject(updated)
     } catch (error: any) {

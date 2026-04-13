@@ -4,9 +4,8 @@ import { getProject, answerQuestion, skipQuestion, doneClarification } from '@/l
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
-import { Textarea } from '../ui/Textarea'
 import { Badge } from '../ui/Badge'
-import { Loader2, Send, Skip } from 'lucide-react'
+import { Loader2, Send, FastForward } from 'lucide-react'
 import type { Question } from '@/types'
 
 export function ClarifyStage() {
@@ -139,7 +138,7 @@ export function ClarifyStage() {
                           }}
                           disabled={isSubmitting}
                         >
-                          <Skip className="mr-2 h-4 w-4" />
+                          <FastForward className="mr-2 h-4 w-4" />
                           Skip
                         </Button>
                       </div>

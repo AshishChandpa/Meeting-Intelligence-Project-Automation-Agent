@@ -161,6 +161,13 @@ export interface SkipRequest {
   reason: string
 }
 
+export interface JiraConfigRequest {
+  domain: string
+  email: string
+  api_token: string
+  project_key: string
+}
+
 // ── UI State types ─────────────────────────────────────────────────────────
 
 export interface ProjectListItem {
