@@ -8,7 +8,14 @@ import logging
 from langchain_core.messages import AIMessage, HumanMessage
 
 from agent.llm import complete_text
-from agent.prompts.sow import DRAFT_SYSTEM, DRAFT_USER, REVISE_SYSTEM, REVISE_USER
+from agent.prompts.sow_enhanced import (
+    DRAFT_SYSTEM,
+    DRAFT_USER,
+    GAP_DETECTION_SYSTEM,
+    GAP_DETECTION_USER,
+    REVISE_SYSTEM,
+    REVISE_USER,
+)
 from agent.state import PipelineState
 
 logger = logging.getLogger(__name__)
@@ -99,6 +106,41 @@ def revise_sow(state: PipelineState) -> dict:
                 content=(
                     f"SoW updated to v{new_version}. "
                     "Review the changes and type more feedback, or 'approve' to proceed to sprint planning."
+                )
+            )
+        ],
+    }
+
+
+def detect_sow_gaps(state: PipelineState) -> dict:
+    """Detect gaps in the Scope of Work document.
+
+    This analyzes the SoW for missing information, vague requirements,
+    unclear scope, and assumptions that should be flagged.
+    """
+    messages = [
+        {"role": "system", "content": GAP_DETECTION_SYSTEM},
+        {
+            "role": "user",
+            "content": GAP_DETECTION_USER.format(
+                sow=state["sow"],
+                extraction=json.dumps(state["extraction"], indent=2),
+            ),
+        },
+    ]
+
+    gap_findings = complete_text(messages)
+
+    logger.info("Detected SoW gaps")
+
+    return {
+        "sow_gaps": gap_findings,
+        "messages": [
+            AIMessage(
+                content=(
+                    "I've analyzed the Scope of Work for gaps and areas that need clarification:\n\n"
+                    f"{gap_findings}\n\n"
+                    "Please review these gaps and address them before approving the SoW."
                 )
             )
         ],

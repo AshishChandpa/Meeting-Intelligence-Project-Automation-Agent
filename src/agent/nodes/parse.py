@@ -8,11 +8,13 @@ import logging
 from langchain_core.messages import AIMessage, HumanMessage
 
 from agent.llm import complete_structured
-from agent.prompts.extraction import (
+from agent.prompts.extraction_enhanced import (
     CORRECTION_SYSTEM,
     CORRECTION_USER,
     EXTRACTION_SYSTEM,
     EXTRACTION_USER,
+    GAP_ANALYSIS_SYSTEM,
+    GAP_ANALYSIS_USER,
 )
 from agent.state import Extraction, PipelineState
 
@@ -83,6 +85,43 @@ def apply_corrections(state: PipelineState) -> dict:
                 content=(
                     f"Applied correction: \"{correction}\". "
                     "Review again or type 'approve' to continue."
+                )
+            )
+        ],
+    }
+
+
+def analyze_gaps(state: PipelineState) -> dict:
+    """Analyze the extraction for gaps and generate targeted questions.
+
+    This is called after parse_transcript to identify missing information
+    before moving to clarification stage.
+    """
+    messages = [
+        {"role": "system", "content": GAP_ANALYSIS_SYSTEM},
+        {
+            "role": "user",
+            "content": GAP_ANALYSIS_USER.format(
+                transcript=state["raw_transcript"],
+                extraction=json.dumps(state["extraction"], indent=2),
+            ),
+        },
+    ]
+
+    # Use text completion for gap analysis questions
+    from agent.llm import complete_text
+    gap_questions = complete_text(messages)
+
+    logger.info("Generated gap analysis questions")
+
+    return {
+        "gap_questions": gap_questions,
+        "messages": [
+            AIMessage(
+                content=(
+                    "I've identified gaps and questions based on the extraction:\n\n"
+                    f"{gap_questions}\n\n"
+                    "These questions will be addressed in the clarification stage."
                 )
             )
         ],

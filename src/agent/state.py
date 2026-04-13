@@ -142,22 +142,28 @@ class PipelineState(MessagesState):
     raw_transcript: str = ""
     extraction: dict = Field(default_factory=dict)
     correction_history: Annotated[list[dict], operator.add] = Field(default_factory=list)
+    gap_questions: str = ""         # gap analysis from enhanced extraction
     stage1_approved: bool = False
 
     # ── Stage 2: Clarification Loop ──
     questions: list[dict] = Field(default_factory=list)   # list[ClarificationQuestion]
+    human_questions: str = ""       # categorized questions for human review
     stage2_approved: bool = False
 
     # ── Stage 3: Scope of Work ──
     sow: str = ""                  # markdown text
     sow_version: int = 0
     sow_revisions: Annotated[list[dict], operator.add] = Field(default_factory=list)
+    sow_gaps: str = ""             # gap detection from enhanced SoW
     stage3_approved: bool = False
 
     # ── Stage 4: Sprint Planning ──
     tasks: list[dict] = Field(default_factory=list)       # list[Task]
     sprints: list[dict] = Field(default_factory=list)     # list[Sprint]
     sprint_warnings: list[str] = Field(default_factory=list)
+    task_questions: str = ""        # questions about task details
+    sprint_questions: str = ""      # questions about sprint organization
+    risk_findings: str = ""         # risk assessment results
     stage4_approved: bool = False
 
     # ── Stage 5: Jira ──

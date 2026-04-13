@@ -9,7 +9,15 @@ import uuid
 from langchain_core.messages import AIMessage, HumanMessage
 
 from agent.llm import complete_structured, complete_text
-from agent.prompts.clarification import FOLLOWUP_SYSTEM, FOLLOWUP_USER, QUESTIONS_SYSTEM, QUESTIONS_USER
+from agent.prompts.clarification_enhanced import (
+    FOLLOWUP_SYSTEM,
+    FOLLOWUP_USER,
+    QUESTIONS_BY_CATEGORY_SYSTEM,
+    QUESTIONS_FOR_HUMAN_SYSTEM,
+    QUESTIONS_FOR_HUMAN_USER,
+    QUESTIONS_SYSTEM,
+    QUESTIONS_USER,
+)
 from agent.state import ClarificationQuestions, PipelineState
 
 logger = logging.getLogger(__name__)
@@ -123,4 +131,48 @@ def process_answer(state: PipelineState) -> dict:
     return {
         "questions": questions,
         "messages": [AIMessage(content=reply)],
+    }
+
+
+def generate_questions_for_human(state: PipelineState) -> dict:
+    """Generate categorized questions specifically formatted for human review.
+
+    This uses the enhanced QUESTIONS_FOR_HUMAN prompts to organize questions
+    by category (Scope, Timeline, Technical, Budget, Team, Process) with
+    clear impact statements.
+    """
+    # Extract unknowns and assumptions from the extraction
+    extraction = state["extraction"]
+    unknowns = extraction.get("unknowns", [])
+    assumptions = [a for a in extraction.get("assumptions", []) if a.get("confidence") == "low"]
+
+    messages = [
+        {"role": "system", "content": QUESTIONS_FOR_HUMAN_SYSTEM},
+        {
+            "role": "user",
+            "content": QUESTIONS_FOR_HUMAN_USER.format(
+                project_name=extraction.get("project_name", "Unknown Project"),
+                client_name=extraction.get("client_name", "Unknown Client"),
+                extraction=json.dumps(extraction, indent=2),
+                unknowns=json.dumps(unknowns, indent=2),
+                assumptions=json.dumps(assumptions, indent=2),
+            ),
+        },
+    ]
+
+    human_questions = complete_text(messages)
+
+    logger.info("Generated categorized questions for human review")
+
+    return {
+        "human_questions": human_questions,
+        "messages": [
+            AIMessage(
+                content=(
+                    "I've prepared targeted questions organized by category:\n\n"
+                    f"{human_questions}\n\n"
+                    "These questions will help clarify gaps before drafting the Scope of Work."
+                )
+            )
+        ],
     }
