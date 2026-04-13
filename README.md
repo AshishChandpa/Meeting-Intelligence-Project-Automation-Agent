@@ -240,33 +240,47 @@ The frontend will be available at `http://localhost:5173`.
 
 ## Jira Configuration
 
-### 1. Create a free Jira account
+📖 **For detailed step-by-step instructions, see [JIRA_SETUP.md](./JIRA_SETUP.md)**
 
-Sign up at [atlassian.com](https://www.atlassian.com) — no credit card required.
+### Quick Setup
 
-### 2. Create a Jira project
+1. **Create a free Jira account** at [atlassian.com](https://www.atlassian.com) — no credit card required
 
-- Type: **Scrum** (required for sprint creation via the Agile API)
-- Note your **project key** (e.g. `MIP`)
+2. **Create a Jira project**
+   - Type: **Scrum** (required for sprint creation via the Agile API)
+   - Note your **project key** (e.g. `MIP`, `DEMO`, `TEST`)
 
-### 3. Generate an API token
+3. **Get your domain**
+   - Check your browser URL when logged into Jira
+   - Format: `yourcompany.atlassian.net` (no `https://`)
 
-Go to [id.atlassian.com/manage-api-tokens](https://id.atlassian.com/manage-api-tokens) → **Create API token**
+4. **Generate an API token**
+   - Go to [id.atlassian.com/manage-api-tokens](https://id.atlassian.com/manage-api-tokens)
+   - Click **"Create API token"**
+   - Copy the token immediately (you won't see it again!)
 
-### 4. Add to `.env` or the UI
-
-```env
-JIRA_DOMAIN=yourcompany.atlassian.net
-JIRA_EMAIL=you@example.com
-JIRA_API_TOKEN=your-token-here
-JIRA_PROJECT_KEY=MIP
-```
+5. **Configure** — either in the web UI (Stage 5) or via `.env`:
+   ```env
+   JIRA_DOMAIN=yourcompany.atlassian.net
+   JIRA_EMAIL=you@example.com
+   JIRA_API_TOKEN=ATATT3yFfxf0Jm...
+   JIRA_PROJECT_KEY=MIP
+   ```
 
 ### What gets created in Jira
 
 - **Epics** — one per module (e.g. Returns Management, User Authentication)
 - **Stories / Tasks** — one per task, linked to their parent Epic
 - **Sprints** — named with a goal (e.g. "Sprint 1 — Returns Core"), populated with issues
+
+### Configuration Fields
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| **Domain** | Your Atlassian domain (without `https://`) | `mycompany.atlassian.net` |
+| **Email** | Your Atlassian account email | `you@example.com` |
+| **API Token** | Token from id.atlassian.com/manage-api-tokens | `ATATT3yFfxf0Jm...` |
+| **Project Key** | Uppercase project identifier | `MIP`, `DEMO`, `TEST` |
 
 ### Error handling
 

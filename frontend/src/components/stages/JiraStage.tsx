@@ -86,9 +86,30 @@ export function JiraStage() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Stage 5: Jira Integration</CardTitle>
+        <div className="flex items-center justify-between">
+          <CardTitle>Stage 5: Jira Integration</CardTitle>
+          <a
+            href="https://github.com/your-repo/blob/main/JIRA_SETUP.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-primary hover:underline"
+          >
+            Setup Guide →
+          </a>
+        </div>
       </CardHeader>
       <CardContent className="space-y-6">
+        {/* Help banner */}
+        <div className="rounded-md border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950">
+          <h4 className="font-semibold text-blue-900 dark:text-blue-100">Need help setting up Jira?</h4>
+          <ul className="mt-2 space-y-1 text-sm text-blue-800 dark:text-blue-200">
+            <li>• <strong>Domain:</strong> Your Atlassian URL (e.g., `mycompany.atlassian.net`)</li>
+            <li>• <strong>API Token:</strong> Get it from <a href="https://id.atlassian.com/manage-api-tokens" target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-600">id.atlassian.com/manage-api-tokens</a></li>
+            <li>• <strong>Project Key:</strong> Check your Jira project URL (e.g., `MIP`, `DEMO`)</li>
+            <li>• Project type must be <strong>Scrum</strong> (not Kanban)</li>
+          </ul>
+        </div>
+
         {/* Jira Config */}
         <div className="space-y-3">
           <h3 className="font-semibold">Jira Configuration</h3>
