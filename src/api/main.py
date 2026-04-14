@@ -7,14 +7,17 @@ we manage the state transitions manually.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent.config import settings
@@ -31,6 +34,7 @@ logger = logging.getLogger(__name__)
 # ── In-memory project storage ─────────────────────────────────────────────
 
 projects: dict[str, dict[str, Any]] = {}
+project_event_subscribers: dict[str, list[asyncio.Queue[tuple[str, dict[str, Any]]]]] = {}
 
 
 # ── Pydantic models for API requests/responses ────────────────────────────
@@ -106,6 +110,48 @@ def get_project(project_id: str) -> dict[str, Any]:
     return projects[project_id]
 
 
+def project_to_response(project: dict[str, Any]) -> dict[str, Any]:
+    """Serialize project payload returned by state/read endpoints."""
+    state = project["state"]
+    return {
+        "id": project["id"],
+        "name": project["name"],
+        "current_stage": state.get("current_stage", "parse"),
+        "extraction": state.get("extraction"),
+        "questions": state.get("questions", []),
+        "sow": state.get("sow", ""),
+        "sow_version": state.get("sow_version", 0),
+        "sow_revisions": state.get("sow_revisions", []),
+        "tasks": state.get("tasks", []),
+        "sprints": state.get("sprints", []),
+        "sprint_warnings": state.get("sprint_warnings", []),
+        "jira_results": state.get("jira_results", []),
+        "stage1_approved": state.get("stage1_approved", False),
+        "stage2_approved": state.get("stage2_approved", False),
+        "stage3_approved": state.get("stage3_approved", False),
+        "stage4_approved": state.get("stage4_approved", False),
+        "stage5_done": state.get("stage5_done", False),
+    }
+
+
+def _format_sse(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+
+
+async def publish_project_event(project_id: str, event: str, payload: dict[str, Any]) -> None:
+    """Publish an event to active SSE subscribers for a project."""
+    subscribers = list(project_event_subscribers.get(project_id, []))
+    for queue in subscribers:
+        await queue.put((event, payload))
+
+
+async def publish_project_state(project_id: str) -> None:
+    project = projects.get(project_id)
+    if not project:
+        return
+    await publish_project_event(project_id, "project_state", project_to_response(project))
+
+
 def update_project_state(project_id: str, updates: dict[str, Any]) -> None:
     """Update project state with new values."""
     if project_id in projects:
@@ -127,8 +173,6 @@ async def health_check():
 @app.post("/api/projects", response_model=CreateProjectResponse)
 async def create_project(request: CreateProjectRequest):
     """Create a new project with a transcript and start Stage 1 parsing."""
-    import time
-
     project_id = str(uuid.uuid4())
 
     # Initialize project state
@@ -150,6 +194,9 @@ async def create_project(request: CreateProjectRequest):
         "jira_config": None,
     }
 
+    projects[project_id] = project
+    await publish_project_event(project_id, "stage_started", {"stage": "parse"})
+
     # Run Stage 1: Parse transcript
     try:
         parse_state = project["state"].copy()
@@ -157,8 +204,8 @@ async def create_project(request: CreateProjectRequest):
         # Parse transcript
         result = parse_transcript(parse_state)
         project["state"].update(result)
-
-        projects[project_id] = project
+        await publish_project_event(project_id, "stage_completed", {"stage": "parse"})
+        await publish_project_state(project_id)
 
         logger.info("Created project %s and completed parsing", project_id)
 
@@ -169,6 +216,7 @@ async def create_project(request: CreateProjectRequest):
         )
 
     except Exception as e:
+        projects.pop(project_id, None)
         logger.exception("Failed to create project")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -191,27 +239,35 @@ async def list_projects():
 async def get_project_state(project_id: str):
     """Get the current state of a project."""
     project = get_project(project_id)
-    state = project["state"]
+    return project_to_response(project)
 
-    return {
-        "id": project["id"],
-        "name": project["name"],
-        "current_stage": state.get("current_stage", "parse"),
-        "extraction": state.get("extraction"),
-        "questions": state.get("questions", []),
-        "sow": state.get("sow", ""),
-        "sow_version": state.get("sow_version", 0),
-        "sow_revisions": state.get("sow_revisions", []),
-        "tasks": state.get("tasks", []),
-        "sprints": state.get("sprints", []),
-        "sprint_warnings": state.get("sprint_warnings", []),
-        "jira_results": state.get("jira_results", []),
-        "stage1_approved": state.get("stage1_approved", False),
-        "stage2_approved": state.get("stage2_approved", False),
-        "stage3_approved": state.get("stage3_approved", False),
-        "stage4_approved": state.get("stage4_approved", False),
-        "stage5_done": state.get("stage5_done", False),
-    }
+
+@app.get("/api/projects/{project_id}/stream")
+async def stream_project_state(project_id: str):
+    """Server-Sent Events stream for real-time project state updates."""
+    project = get_project(project_id)
+    queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+    subscribers = project_event_subscribers.setdefault(project_id, [])
+    subscribers.append(queue)
+
+    async def event_generator():
+        try:
+            # Initial snapshot so UI can hydrate immediately.
+            yield _format_sse("project_state", project_to_response(project))
+            while True:
+                try:
+                    event_name, payload = await asyncio.wait_for(queue.get(), timeout=20)
+                    yield _format_sse(event_name, payload)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            active = project_event_subscribers.get(project_id, [])
+            if queue in active:
+                active.remove(queue)
+            if not active:
+                project_event_subscribers.pop(project_id, None)
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.delete("/api/projects/{project_id}")
@@ -221,6 +277,7 @@ async def delete_project(project_id: str):
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
 
     del projects[project_id]
+    project_event_subscribers.pop(project_id, None)
     return {"message": f"Project {project_id} deleted"}
 
 
@@ -232,6 +289,7 @@ async def approve_stage1(project_id: str):
     project = get_project(project_id)
 
     try:
+        await publish_project_event(project_id, "stage_started", {"stage": "clarify"})
         # Run Stage 2: Generate questions
         state = project["state"].copy()
         state["stage1_approved"] = True
@@ -241,6 +299,8 @@ async def approve_stage1(project_id: str):
         result = generate_questions(state)
 
         project["state"].update(result)
+        await publish_project_event(project_id, "stage_completed", {"stage": "clarify"})
+        await publish_project_state(project_id)
         return {"message": "Stage 1 approved", "next_stage": "clarify"}
 
     except Exception as e:
@@ -261,6 +321,7 @@ async def submit_stage1_feedback(project_id: str, request: FeedbackRequest):
 
         result = apply_corrections(state)
         project["state"].update(result)
+        await publish_project_state(project_id)
         return {"message": "Correction applied", "extraction": result.get("extraction")}
 
     except Exception as e:
@@ -285,6 +346,7 @@ async def answer_question(project_id: str, request: AnswerRequest):
 
         result = process_answer(state)
         project["state"].update(result)
+        await publish_project_state(project_id)
         return {"message": "Answer processed", "questions": result.get("questions", [])}
 
     except Exception as e:
@@ -307,6 +369,7 @@ async def skip_question(project_id: str, request: SkipRequest):
 
         result = process_answer(state)
         project["state"].update(result)
+        await publish_project_state(project_id)
         return {"message": "Question skipped", "questions": result.get("questions", [])}
 
     except Exception as e:
@@ -320,6 +383,7 @@ async def done_clarification(project_id: str):
     project = get_project(project_id)
 
     try:
+        await publish_project_event(project_id, "stage_started", {"stage": "sow"})
         # Run Stage 3: Draft SoW
         state = project["state"].copy()
         state["stage2_approved"] = True
@@ -327,6 +391,8 @@ async def done_clarification(project_id: str):
 
         result = draft_sow(state)
         project["state"].update(result)
+        await publish_project_event(project_id, "stage_completed", {"stage": "sow"})
+        await publish_project_state(project_id)
         return {"message": "Clarification complete", "next_stage": "sow"}
 
     except Exception as e:
@@ -348,6 +414,7 @@ async def submit_sow_feedback(project_id: str, request: FeedbackRequest):
         state["messages"].append(HumanMessage(content=request.feedback))
         result = revise_sow(state)
         project["state"].update(result)
+        await publish_project_state(project_id)
         return {"message": "SoW revised", "sow": result.get("sow"), "version": result.get("sow_version")}
 
     except Exception as e:
@@ -368,6 +435,7 @@ async def approve_sow(project_id: str):
         )
 
     try:
+        await publish_project_event(project_id, "stage_started", {"stage": "sprint"})
         # Run Stage 4: Generate sprint plan
         state = project["state"].copy()
         state["stage3_approved"] = True
@@ -375,6 +443,8 @@ async def approve_sow(project_id: str):
 
         result = generate_sprint_plan(state)
         project["state"].update(result)
+        await publish_project_event(project_id, "stage_completed", {"stage": "sprint"})
+        await publish_project_state(project_id)
         return {"message": "SoW approved", "next_stage": "sprint"}
 
     except Exception as e:
@@ -396,6 +466,7 @@ async def submit_sprint_feedback(project_id: str, request: FeedbackRequest):
         state["messages"].append(HumanMessage(content=request.feedback))
         result = adjust_sprint_plan(state)
         project["state"].update(result)
+        await publish_project_state(project_id)
         return {"message": "Sprint plan adjusted", "sprints": result.get("sprints", [])}
 
     except Exception as e:
@@ -413,6 +484,7 @@ async def approve_sprint_plan(project_id: str):
         state["stage4_approved"] = True
         state["current_stage"] = "jira"
         project["state"].update(state)
+        await publish_project_state(project_id)
         return {"message": "Sprint plan approved", "next_stage": "jira"}
 
     except Exception as e:
@@ -433,6 +505,8 @@ async def set_jira_config(project_id: str, request: JiraConfigRequest):
         "api_token": request.api_token,
         "project_key": request.project_key,
     }
+
+    await publish_project_event(project_id, "jira_config_saved", {"project_id": project_id})
 
     return {"message": "Jira config saved"}
 
@@ -484,6 +558,7 @@ async def sync_to_jira_endpoint(project_id: str):
         raise HTTPException(status_code=400, detail="Jira config not set. Please set it first.")
 
     try:
+        await publish_project_event(project_id, "stage_started", {"stage": "done"})
         # Add Jira config to state and run sync
         state = project["state"].copy()
         state["jira_config"] = jira_config
@@ -491,6 +566,8 @@ async def sync_to_jira_endpoint(project_id: str):
         result = sync_to_jira(state)
         project["state"].update(result)
         project["state"]["stage5_done"] = True
+        await publish_project_event(project_id, "stage_completed", {"stage": "done"})
+        await publish_project_state(project_id)
         return {"message": "Jira sync complete", "results": result.get("jira_results", [])}
 
     except Exception as e:

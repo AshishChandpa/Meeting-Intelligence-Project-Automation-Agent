@@ -5,6 +5,7 @@ interface ProjectStore {
   // Current project
   currentProject: ProjectState | null
   setCurrentProject: (project: ProjectState | null) => void
+  syncCurrentProject: (project: ProjectState) => void
 
   // All projects list
   projects: ProjectListItem[]
@@ -23,6 +24,7 @@ export const useProjectStore = create<ProjectStore>((set) => ({
   // Current project
   currentProject: null,
   setCurrentProject: (project) => set({ currentProject: project, error: null }),
+  syncCurrentProject: (project) => set({ currentProject: project }),
 
   // All projects list
   projects: [],

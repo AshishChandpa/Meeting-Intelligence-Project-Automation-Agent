@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useProjectStore } from './store/projectStore'
 import { ProjectSwitcher } from './components/ProjectSwitcher'
 import { StageProgress } from './components/StageProgress'
+import { useProjectStream } from './hooks/useProjectStream'
 import { ParseStage } from './components/stages/ParseStage'
 import { ClarifyStage } from './components/stages/ClarifyStage'
 import { SowStage } from './components/stages/SowStage'
@@ -11,6 +12,7 @@ import { Loader2, AlertCircle } from 'lucide-react'
 
 function App() {
   const { currentProject, isLoading, error, setError } = useProjectStore()
+  useProjectStream(currentProject?.id ?? null)
 
   useEffect(() => {
     if (error) {
