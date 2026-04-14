@@ -272,10 +272,28 @@ class TranscriptPreprocessor:
             r'(?:i want|i need|i would like|i\'d like|we want|we need)',
             r'(?:the app|the system|the platform|it) (?:should|could|needs to|must)',
             r'(?:there should be|there needs to be|we could add)',
+            r'(?:can we|could we|would it be possible)',
+            r'(?:there could be|another module|another section)',
+            r'(?:users? can|you can|they can)',
         ]
 
+        secondary_speakers = {
+            'team member 1',
+            'team member 2',
+            'team member 3',
+        }
+
+        high_signal_terms = {
+            'module', 'feature', 'integration', 'api', 'dashboard', 'geofence',
+            'notification', 'comparison', 'marketplace', 'onboarding', 'sprint',
+            'property', 'loan', 'cashflow', 'budget', 'story', 'tour', 'legacy',
+        }
+
         for seg in segments:
-            if 'client' in seg.speaker.lower():
+            speaker_lower = seg.speaker.lower()
+
+            # Primary source: explicit client statements
+            if 'client' in speaker_lower:
                 for pattern in requirement_patterns:
                     matches = re.finditer(pattern, seg.content, re.IGNORECASE)
                     for match in matches:
@@ -290,6 +308,14 @@ class TranscriptPreprocessor:
 
                         if len(requirement) > 20:  # Filter out too-short matches
                             requirements.append(f"[{seg.timestamp}] {requirement}")
+
+            # Secondary source: requirement paraphrases from discovery team
+            elif speaker_lower in secondary_speakers:
+                content_lower = seg.content.lower()
+                if any(term in content_lower for term in high_signal_terms):
+                    snippet = seg.content.strip()
+                    if len(snippet) > 35:
+                        requirements.append(f"[{seg.timestamp}] {snippet[:220].strip()}")
 
         return requirements
 
