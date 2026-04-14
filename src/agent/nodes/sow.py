@@ -21,6 +21,42 @@ from agent.state import PipelineState
 logger = logging.getLogger(__name__)
 
 
+REQUIRED_SOW_SECTIONS = [
+    "## Executive Summary",
+    "## In-Scope Items",
+    "## Out-of-Scope Items",
+    "## Modules & Deliverables",
+    "## Integrations",
+    "## Constraints & Assumptions",
+    "## Open Items",
+    "## Timeline Overview",
+]
+
+
+def sow_missing_sections(sow: str) -> list[str]:
+    missing = []
+    normalized = sow or ""
+    for heading in REQUIRED_SOW_SECTIONS:
+        if heading not in normalized:
+            missing.append(heading)
+    return missing
+
+
+def _ensure_sow_sections(sow: str) -> str:
+    """Append placeholder sections if LLM misses required SoW headings."""
+    text = sow or ""
+    missing = sow_missing_sections(text)
+    if not missing:
+        return text
+
+    additions = []
+    for heading in missing:
+        additions.append(f"{heading}\n- TO BE CONFIRMED")
+
+    suffix = "\n\n" + "\n\n".join(additions)
+    return text.rstrip() + suffix
+
+
 def _format_qa(questions: list[dict]) -> str:
     """Format Q&A into a readable string for the SoW prompt."""
     lines = []
@@ -49,6 +85,7 @@ def draft_sow(state: PipelineState) -> dict:
     ]
 
     sow_text = complete_text(messages)
+    sow_text = _ensure_sow_sections(sow_text)
 
     return {
         "sow": sow_text,
@@ -90,6 +127,7 @@ def revise_sow(state: PipelineState) -> dict:
     ]
 
     revised_sow = complete_text(messages)
+    revised_sow = _ensure_sow_sections(revised_sow)
     new_version = current_version + 1
 
     # Extract changelog section from the revised SoW for the revision history

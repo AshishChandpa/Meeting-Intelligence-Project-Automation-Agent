@@ -25,6 +25,100 @@ from agent.state import PipelineState, SprintPlan
 logger = logging.getLogger(__name__)
 
 
+def _validate_sprint_plan(tasks: list[dict], sprints: list[dict], base_warnings: list[str] | None = None) -> list[str]:
+    """Validate capacity, dependency order, and task assignment consistency."""
+    warnings = list(base_warnings or [])
+
+    task_ids = {t["id"] for t in tasks}
+    task_by_id = {t["id"]: t for t in tasks}
+    sprint_index_by_task: dict[str, int] = {}
+    seen_assignments: dict[str, int] = {}
+
+    for idx, sprint in enumerate(sprints):
+        if sprint.get("total_points", 0) > 40:
+            warnings.append(f"{sprint['name']} has {sprint['total_points']} points (exceeds 40-point limit)")
+        for task_id in sprint.get("task_ids", []):
+            seen_assignments[task_id] = seen_assignments.get(task_id, 0) + 1
+            sprint_index_by_task[task_id] = idx
+
+    for task_id, count in seen_assignments.items():
+        if count > 1:
+            warnings.append(f"Task {task_id} appears in multiple sprints ({count} times)")
+
+    unassigned = sorted(tid for tid in task_ids if tid not in sprint_index_by_task)
+    if unassigned:
+        warnings.append(f"Unassigned tasks: {', '.join(unassigned)}")
+
+    for task in tasks:
+        current_task_id = task["id"]
+        current_sprint_idx = sprint_index_by_task.get(current_task_id)
+        if current_sprint_idx is None:
+            continue
+        for dep_id in task.get("dependencies", []):
+            if dep_id not in task_ids:
+                warnings.append(f"Task {current_task_id} depends on missing task {dep_id}")
+                continue
+            dep_sprint_idx = sprint_index_by_task.get(dep_id)
+            if dep_sprint_idx is None:
+                warnings.append(f"Task {current_task_id} depends on unassigned task {dep_id}")
+                continue
+            if dep_sprint_idx > current_sprint_idx:
+                warnings.append(
+                    f"Dependency order issue: {current_task_id} is scheduled before dependency {dep_id}"
+                )
+
+    # Transcript-specific requirement: returns module should be in sprint 1 when present.
+    if sprints:
+        sprint_1_task_ids = set(sprints[0].get("task_ids", []))
+        returns_tasks = [t["id"] for t in tasks if "return" in (t.get("module", "") + " " + t.get("title", "")).lower()]
+        for task_id in returns_tasks:
+            if task_id not in sprint_1_task_ids:
+                warnings.append(f"Returns-related task {task_id} is not in Sprint 1")
+
+    # Deduplicate while preserving order.
+    deduped = []
+    seen = set()
+    for warning in warnings:
+        if warning in seen:
+            continue
+        seen.add(warning)
+        deduped.append(warning)
+    return deduped
+
+
+def _recalculate_sprint_totals(tasks: list[dict], sprints: list[dict]) -> list[dict]:
+    task_points = {t["id"]: t.get("story_points", 0) for t in tasks}
+    updated = []
+    for sprint in sprints:
+        copied = dict(sprint)
+        copied["total_points"] = sum(task_points.get(tid, 0) for tid in copied.get("task_ids", []))
+        updated.append(copied)
+    return updated
+
+
+def move_task_between_sprints(tasks: list[dict], sprints: list[dict], task_id: str, target_sprint_name: str) -> tuple[list[dict], list[str]]:
+    """Move a task to a target sprint and return updated sprints + validation warnings."""
+    if task_id not in {t["id"] for t in tasks}:
+        raise ValueError(f"Task '{task_id}' not found")
+
+    target_index = next((i for i, s in enumerate(sprints) if s.get("name") == target_sprint_name), None)
+    if target_index is None:
+        raise ValueError(f"Sprint '{target_sprint_name}' not found")
+
+    updated_sprints = []
+    for i, sprint in enumerate(sprints):
+        task_ids = [tid for tid in sprint.get("task_ids", []) if tid != task_id]
+        if i == target_index:
+            task_ids.append(task_id)
+        copied = dict(sprint)
+        copied["task_ids"] = task_ids
+        updated_sprints.append(copied)
+
+    updated_sprints = _recalculate_sprint_totals(tasks, updated_sprints)
+    warnings = _validate_sprint_plan(tasks, updated_sprints)
+    return updated_sprints, warnings
+
+
 def generate_sprint_plan(state: PipelineState) -> dict:
     """Generate tasks and sprint plan from the approved SoW."""
     logger.info("Generating sprint plan...")
@@ -42,20 +136,12 @@ def generate_sprint_plan(state: PipelineState) -> dict:
 
     result: SprintPlan = complete_structured(messages, schema=SprintPlan)
 
-    # Recalculate sprint totals from task story points
-    task_points = {t.id: t.story_points for t in result.tasks}
-    sprints_data = []
-    warnings = list(result.warnings)
-
-    for sprint in result.sprints:
-        total = sum(task_points.get(tid, 0) for tid in sprint.task_ids)
-        sprint_dict = sprint.model_dump()
-        sprint_dict["total_points"] = total
-        sprints_data.append(sprint_dict)
-        if total > 40:
-            warnings.append(f"{sprint.name} has {total} points (exceeds 40-point limit)")
-
+    sprints_data = _recalculate_sprint_totals(
+        [t.model_dump() for t in result.tasks],
+        [s.model_dump() for s in result.sprints],
+    )
     tasks_data = [t.model_dump() for t in result.tasks]
+    warnings = _validate_sprint_plan(tasks_data, sprints_data, base_warnings=list(result.warnings))
     total_tasks = len(tasks_data)
     total_sprints = len(sprints_data)
 
@@ -99,20 +185,12 @@ def adjust_sprint_plan(state: PipelineState) -> dict:
 
     result: SprintPlan = complete_structured(messages, schema=SprintPlan)
 
-    task_points = {t.id: t.story_points for t in result.tasks}
-    sprints_data = []
-    warnings = []
-
-    for sprint in result.sprints:
-        total = sum(task_points.get(tid, 0) for tid in sprint.task_ids)
-        sprint_dict = sprint.model_dump()
-        sprint_dict["total_points"] = total
-        sprints_data.append(sprint_dict)
-        if total > 40:
-            warnings.append(f"{sprint.name} has {total} points (exceeds 40-point limit)")
+    tasks_data = [t.model_dump() for t in result.tasks]
+    sprints_data = _recalculate_sprint_totals(tasks_data, [s.model_dump() for s in result.sprints])
+    warnings = _validate_sprint_plan(tasks_data, sprints_data)
 
     return {
-        "tasks": [t.model_dump() for t in result.tasks],
+        "tasks": tasks_data,
         "sprints": sprints_data,
         "sprint_warnings": warnings,
         "messages": [

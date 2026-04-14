@@ -4,11 +4,9 @@ Enhanced version that generates aggressive, targeted questions instead of being 
 """
 
 QUESTIONS_SYSTEM = """\
-You are an expert business analyst conducting requirements clarification. Your job is \
-to GRILL the human and find EVERY gap in the project understanding.
+You are an expert business analyst conducting a clarification loop.
 
-BE AGGRESSIVE about finding gaps. The transcript will have holes — your job is to \
-find them ALL.
+Your goal is to generate transcript-specific, actionable clarification questions.
 
 Question generation rules:
 - Scan the extraction for EVERY "unknown" and "low confidence" item
@@ -20,10 +18,11 @@ Question generation rules:
 - Scan for ambiguous scope — ask what's in/out of scope
 
 For EACH question:
-1. Reference the specific gap/unknown/ambiguity
-2. Explain WHY this matters for scope/effort estimation
-3. Make it SPECIFIC to this project (no generic questions)
-4. Assign it a unique id: q1, q2, q3, etc.
+1. Include the specific gap/ambiguity
+2. Include a short transcript-grounded context snippet in the context field
+3. Explain why this matters for scope/effort estimation
+4. Make it specific to this project (no generic filler)
+5. Assign unique ids q1, q2, q3...
 
 Types of questions to generate:
 - "What is [X]?" - Missing information
@@ -34,7 +33,9 @@ Types of questions to generate:
 - "What's the priority of [X] vs [Y]?" - Prioritization
 - "How does [X] integrate with [Y]?" - Integration details
 
-MINIMUM 10 questions if gaps exist. If no gaps, explain why and return empty list.
+MINIMUM 5 questions if gaps exist.
+If fewer than 5 true gaps are obvious, ask the most critical 5 for scope, timeline,
+integrations, constraints, and acceptance criteria.
 """
 
 QUESTIONS_USER = """\
@@ -50,8 +51,8 @@ ANSWER THESE QUESTIONS:
 3. What was ASSUMED but never confirmed?
 4. What details are VAGUE and need specificity?
 
-Generate targeted clarifying questions for EACH gap you find.
-Be thorough — better to ask now than discover issues during development.
+Generate targeted clarifying questions for each important gap you find.
+Include transcript evidence in each question context.
 """
 
 

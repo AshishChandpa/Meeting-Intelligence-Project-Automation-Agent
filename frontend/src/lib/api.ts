@@ -84,6 +84,14 @@ export async function doneClarification(projectId: string): Promise<{ message: s
   return response.data
 }
 
+export async function askClarificationQuestion(
+  projectId: string,
+  request: { question: string },
+): Promise<{ message: string; answer: string; questions: any[] }> {
+  const response = await api.post(`/api/projects/${projectId}/stage/clarify/ask`, request)
+  return response.data
+}
+
 // ── Stage 3: Scope of Work ──────────────────────────────────────────────────
 
 export async function submitSowFeedback(
@@ -111,6 +119,14 @@ export async function submitSprintFeedback(
 
 export async function approveSprintPlan(projectId: string): Promise<{ message: string; next_stage: string }> {
   const response = await api.post(`/api/projects/${projectId}/stage/sprint/approve`)
+  return response.data
+}
+
+export async function moveSprintTask(
+  projectId: string,
+  request: { task_id: string; sprint_name: string },
+): Promise<{ message: string; sprints: any[]; warnings: string[] }> {
+  const response = await api.post(`/api/projects/${projectId}/stage/sprint/move-task`, request)
   return response.data
 }
 

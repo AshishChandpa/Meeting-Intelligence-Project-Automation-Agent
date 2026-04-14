@@ -12,6 +12,7 @@ const STAGES: { key: Stage; label: string; description: string }[] = [
   { key: 'sow', label: '3. SoW', description: 'Scope of Work' },
   { key: 'sprint', label: '4. Sprint', description: 'Task breakdown' },
   { key: 'jira', label: '5. Jira', description: 'Sync to Jira' },
+  { key: 'done', label: '6. Done', description: 'Pipeline complete' },
 ]
 
 export function StageProgress({ currentStage }: StageProgressProps) {

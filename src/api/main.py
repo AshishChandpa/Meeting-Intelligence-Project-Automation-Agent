@@ -22,9 +22,9 @@ from pydantic import BaseModel
 
 from agent.config import settings
 from agent.nodes.parse import apply_corrections, parse_transcript
-from agent.nodes.clarify import generate_questions, process_answer
-from agent.nodes.sow import draft_sow, revise_sow
-from agent.nodes.sprint import generate_sprint_plan, adjust_sprint_plan
+from agent.nodes.clarify import answer_human_question, generate_questions, process_answer
+from agent.nodes.sow import draft_sow, revise_sow, sow_missing_sections
+from agent.nodes.sprint import adjust_sprint_plan, generate_sprint_plan, move_task_between_sprints
 from agent.nodes.jira_sync import sync_to_jira
 from agent.state import Extraction
 
@@ -64,11 +64,20 @@ class SkipRequest(BaseModel):
     reason: str
 
 
+class AskRequest(BaseModel):
+    question: str
+
+
 class JiraConfigRequest(BaseModel):
     domain: str
     email: str
     api_token: str
     project_key: str
+
+
+class MoveTaskRequest(BaseModel):
+    task_id: str
+    sprint_name: str
 
 
 # ── Lifespan management ───────────────────────────────────────────────────
@@ -377,6 +386,30 @@ async def skip_question(project_id: str, request: SkipRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/projects/{project_id}/stage/clarify/ask")
+async def ask_question(project_id: str, request: AskRequest):
+    """Ask a user-initiated clarification/planning question in Stage 2."""
+    project = get_project(project_id)
+
+    try:
+        state = project["state"].copy()
+        result = answer_human_question(state, request.question)
+        project["state"].update(result)
+        await publish_project_state(project_id)
+        answer_text = ""
+        if result.get("messages"):
+            answer_text = getattr(result["messages"][0], "content", "") or ""
+        return {
+            "message": "Question answered",
+            "answer": answer_text,
+            "questions": result.get("questions", []),
+        }
+
+    except Exception as e:
+        logger.exception("Failed to answer user question")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/projects/{project_id}/stage/clarify/done")
 async def done_clarification(project_id: str):
     """Mark clarification as complete and proceed to Stage 3."""
@@ -434,6 +467,13 @@ async def approve_sow(project_id: str):
             detail="Please provide at least one round of feedback before approving",
         )
 
+    missing_sections = sow_missing_sections(project["state"].get("sow", ""))
+    if missing_sections:
+        raise HTTPException(
+            status_code=400,
+            detail=f"SoW is missing required sections: {', '.join(missing_sections)}",
+        )
+
     try:
         await publish_project_event(project_id, "stage_started", {"stage": "sprint"})
         # Run Stage 4: Generate sprint plan
@@ -489,6 +529,31 @@ async def approve_sprint_plan(project_id: str):
 
     except Exception as e:
         logger.exception("Failed to approve sprint plan")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/projects/{project_id}/stage/sprint/move-task")
+async def move_task(project_id: str, request: MoveTaskRequest):
+    """Move a task to a different sprint before approval."""
+    project = get_project(project_id)
+
+    try:
+        state = project["state"]
+        updated_sprints, warnings = move_task_between_sprints(
+            tasks=state.get("tasks", []),
+            sprints=state.get("sprints", []),
+            task_id=request.task_id,
+            target_sprint_name=request.sprint_name,
+        )
+        state["sprints"] = updated_sprints
+        state["sprint_warnings"] = warnings
+        await publish_project_state(project_id)
+        return {"message": "Task moved", "sprints": updated_sprints, "warnings": warnings}
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to move task")
         raise HTTPException(status_code=500, detail=str(e))
 
 

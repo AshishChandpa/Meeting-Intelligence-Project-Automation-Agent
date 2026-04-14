@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useProjectStore } from '@/store/projectStore'
-import { getProject, answerQuestion, skipQuestion, doneClarification } from '@/lib/api'
+import { askClarificationQuestion, getProject, answerQuestion, skipQuestion, doneClarification } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
@@ -12,6 +12,8 @@ export function ClarifyStage() {
   const { currentProject, setCurrentProject, setIsLoading, setError } = useProjectStore()
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [skipReasons, setSkipReasons] = useState<Record<string, string>>({})
+  const [userQuestion, setUserQuestion] = useState('')
+  const [userAnswer, setUserAnswer] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const questions = currentProject?.questions || []
@@ -70,6 +72,25 @@ export function ClarifyStage() {
       setCurrentProject(updated)
     } catch (error: any) {
       setError(`Failed to complete clarification: ${error}`)
+    } finally {
+      setIsSubmitting(false)
+      setIsLoading(false)
+    }
+  }
+
+  const handleAskQuestion = async () => {
+    if (!currentProject || !userQuestion.trim()) return
+
+    try {
+      setIsSubmitting(true)
+      setIsLoading(true)
+      const result = await askClarificationQuestion(currentProject.id, { question: userQuestion })
+      const updated = await getProject(currentProject.id)
+      setCurrentProject(updated)
+      setUserAnswer(result.answer || '')
+      setUserQuestion('')
+    } catch (error: any) {
+      setError(`Failed to ask question: ${error}`)
     } finally {
       setIsSubmitting(false)
       setIsLoading(false)
@@ -169,6 +190,35 @@ export function ClarifyStage() {
             ))}
           </div>
         )}
+
+        <div className="rounded-md border p-4">
+          <h3 className="mb-2 font-semibold">Ask your own question</h3>
+          <p className="mb-3 text-sm text-muted-foreground">
+            Ask planning questions in context, for example: "Can we fit reporting into Sprint 2?"
+          </p>
+          <div className="flex gap-2">
+            <Input
+              placeholder="Type your question..."
+              value={userQuestion}
+              onChange={(e) => setUserQuestion(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  handleAskQuestion()
+                }
+              }}
+            />
+            <Button onClick={handleAskQuestion} disabled={!userQuestion.trim() || isSubmitting}>
+              Ask
+            </Button>
+          </div>
+          {userAnswer && (
+            <div className="mt-3 rounded-md bg-muted p-3">
+              <p className="text-sm font-medium">Answer:</p>
+              <p className="mt-1 text-sm">{userAnswer}</p>
+            </div>
+          )}
+        </div>
 
         <div className="flex justify-end border-t pt-4">
           <Button onClick={handleDone} disabled={isSubmitting}>

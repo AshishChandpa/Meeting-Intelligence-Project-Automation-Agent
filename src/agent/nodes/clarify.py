@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -23,6 +22,77 @@ from agent.state import ClarificationQuestions, PipelineState
 logger = logging.getLogger(__name__)
 
 
+def _normalize_questions(questions: list[dict], extraction: dict) -> list[dict]:
+    """Normalize question ids and ensure context exists for each question."""
+    normalized = []
+    for idx, q in enumerate(questions, start=1):
+        question_text = (q.get("question") or "").strip()
+        if not question_text:
+            continue
+
+        context = (q.get("context") or "").strip()
+        if not context:
+            top_unknown = (extraction.get("unknowns") or [])
+            if top_unknown:
+                context = f"Related to unresolved item: {top_unknown[0].get('description', 'unknown detail')}"
+            else:
+                context = "Clarification needed for accurate scoping and sprint planning."
+
+        normalized.append(
+            {
+                "id": f"q{idx}",
+                "question": question_text,
+                "context": context,
+                "status": q.get("status", "open"),
+                "answer": q.get("answer", ""),
+                "skip_reason": q.get("skip_reason", ""),
+            }
+        )
+    return normalized
+
+
+def _ensure_minimum_questions(questions: list[dict], extraction: dict, minimum: int = 5) -> list[dict]:
+    """Ensure at least `minimum` questions by adding deterministic gap-focused fallbacks."""
+    if len(questions) >= minimum:
+        return questions
+
+    fallback_templates = [
+        "What timeline or launch date should we plan against for this project?",
+        "What budget range or cap should we use to calibrate scope and sprint depth?",
+        "Which integrations are mandatory for phase 1 and what authentication method do they use?",
+        "Which requirements are must-have for MVP versus later phases?",
+        "Are there compliance, security, or data residency constraints we must satisfy at launch?",
+        "What acceptance criteria define success for the highest-priority module?",
+    ]
+
+    existing = {q.get("question", "").strip().lower() for q in questions}
+    next_id = len(questions) + 1
+
+    top_unknown = (extraction.get("unknowns") or [])
+    unknown_hint = top_unknown[0].get("description") if top_unknown else "project scope gaps"
+
+    for template in fallback_templates:
+        if len(questions) >= minimum:
+            break
+        key = template.strip().lower()
+        if key in existing:
+            continue
+        questions.append(
+            {
+                "id": f"q{next_id}",
+                "question": template,
+                "context": f"Transcript indicates unresolved detail: {unknown_hint}",
+                "status": "open",
+                "answer": "",
+                "skip_reason": "",
+            }
+        )
+        next_id += 1
+        existing.add(key)
+
+    return questions
+
+
 def generate_questions(state: PipelineState) -> dict:
     """Generate targeted clarification questions from the Stage 1 extraction."""
     messages = [
@@ -38,6 +108,8 @@ def generate_questions(state: PipelineState) -> dict:
 
     result: ClarificationQuestions = complete_structured(messages, schema=ClarificationQuestions)
     questions = [q.model_dump() for q in result.questions]
+    questions = _normalize_questions(questions, state["extraction"])
+    questions = _ensure_minimum_questions(questions, state["extraction"], minimum=5)
 
     logger.info("Generated %d clarification questions", len(questions))
 
@@ -53,6 +125,50 @@ def generate_questions(state: PipelineState) -> dict:
                 )
             )
         ],
+    }
+
+
+def answer_human_question(state: PipelineState, question: str) -> dict:
+    """Answer a user-initiated clarification question in project context."""
+    if not question.strip():
+        return {}
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a project planning assistant. Answer in concise, practical terms "
+                "using transcript, extraction, and clarification context. If uncertain, say so "
+                "and propose what needs confirmation."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"User question: {question}\n\n"
+                f"Extraction:\n{json.dumps(state.get('extraction', {}), indent=2)}\n\n"
+                f"Clarification Q&A:\n{json.dumps(state.get('questions', []), indent=2)}"
+            ),
+        },
+    ]
+
+    response = complete_text(messages)
+    questions = [dict(q) for q in state.get("questions", [])]
+    user_q_id = f"q{len(questions) + 1}"
+    questions.append(
+        {
+            "id": user_q_id,
+            "question": f"[User] {question}",
+            "context": "User-initiated planning question",
+            "status": "answered",
+            "answer": response,
+            "skip_reason": "",
+        }
+    )
+
+    return {
+        "questions": questions,
+        "messages": [AIMessage(content=response)],
     }
 
 

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useProjectStore } from '@/store/projectStore'
-import { getProject, submitSprintFeedback, approveSprintPlan } from '@/lib/api'
+import { getProject, moveSprintTask, submitSprintFeedback, approveSprintPlan } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card'
 import { Button } from '../ui/Button'
 import { Textarea } from '../ui/Textarea'
@@ -11,6 +11,7 @@ import type { Task, Sprint } from '@/types'
 export function SprintStage() {
   const { currentProject, setCurrentProject, setIsLoading, setError } = useProjectStore()
   const [feedback, setFeedback] = useState('')
+  const [taskTargets, setTaskTargets] = useState<Record<string, string>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const tasks = currentProject?.tasks || []
@@ -46,6 +47,25 @@ export function SprintStage() {
       setCurrentProject(updated)
     } catch (error: any) {
       setError(`Failed to approve: ${error}`)
+    } finally {
+      setIsSubmitting(false)
+      setIsLoading(false)
+    }
+  }
+
+  const handleMoveTask = async (taskId: string) => {
+    if (!currentProject) return
+    const targetSprint = taskTargets[taskId]
+    if (!targetSprint) return
+
+    try {
+      setIsSubmitting(true)
+      setIsLoading(true)
+      await moveSprintTask(currentProject.id, { task_id: taskId, sprint_name: targetSprint })
+      const updated = await getProject(currentProject.id)
+      setCurrentProject(updated)
+    } catch (error: any) {
+      setError(`Failed to move task: ${error}`)
     } finally {
       setIsSubmitting(false)
       setIsLoading(false)
@@ -123,6 +143,30 @@ export function SprintStage() {
                               Depends on: {task.dependencies.join(', ')}
                             </p>
                           )}
+                          <div className="mt-2 flex items-center gap-2">
+                            <select
+                              className="h-8 rounded-md border bg-background px-2 text-xs"
+                              value={taskTargets[task.id] || ''}
+                              onChange={(e) => setTaskTargets({ ...taskTargets, [task.id]: e.target.value })}
+                            >
+                              <option value="">Move to sprint...</option>
+                              {sprints
+                                .filter((s: Sprint) => s.name !== sprint.name)
+                                .map((s: Sprint) => (
+                                  <option key={s.name} value={s.name}>
+                                    {s.name}
+                                  </option>
+                                ))}
+                            </select>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={!taskTargets[task.id] || isSubmitting}
+                              onClick={() => handleMoveTask(task.id)}
+                            >
+                              Move
+                            </Button>
+                          </div>
                         </div>
                       </div>
                       {task.acceptance_criteria.length > 0 && (

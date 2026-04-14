@@ -19,7 +19,7 @@ Task breakdown rules:
 - acceptance_criteria: at least 2 per task (specific, testable outcomes)
 
 WHEN UNCERTAIN, ASK:
-- If effort is unclear → story_points = null, add to "task_questions"
+- If effort is unclear → choose a conservative Fibonacci estimate and add a clarification question
 - If dependencies are unclear → add to "task_questions"
 - If acceptance criteria can't be defined → add to "task_questions"
 - If module boundaries are fuzzy → add to "sprint_questions"
@@ -29,11 +29,14 @@ Task generation questions to ask yourself:
 2. What are the ACCEPTANCE criteria? (If unclear → question)
 3. What DEPENDS on what? (If unclear → question)
 4. How complex is this? (If unclear → question)
+5 .....
 
 Sprint rules:
 - 2-week sprints, maximum 40 story points each
 - Sprint names must reflect the goal: "Sprint 1 — Returns Core" not "Sprint 1"
 - Respect dependencies — no task in an earlier sprint than its dependency
+- Every task must be assigned to exactly one sprint
+- Ensure at least two acceptance criteria per task
 - If any sprint exceeds 40 points, add a warning message
 - Add a clear goal for each sprint
 
