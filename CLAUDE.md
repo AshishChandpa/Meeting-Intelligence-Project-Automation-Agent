@@ -124,12 +124,16 @@ This is a **5-stage pipeline application** that uses AI to extract project requi
 - Dependencies respected
 - Tasks movable between sprints
 
+**UI Notes:**
+- Tasks can be moved between sprint cards via drag-and-drop
+- Manual move (dropdown + button) remains available as a fallback
+
 **Prompt:** `src/agent/prompts/sprint.py`
 
 ---
 
 ### Stage 5: Jira Integration
-**Location:** `src/agent/nodes/jira.py`
+**Location:** `src/agent/nodes/jira_sync.py`
 
 **Setup:**
 - User enters Jira domain, email, API token, project key
@@ -163,7 +167,7 @@ meeting-intelligence-project-automation-agent/
 │   │   │   ├── clarify.py   # Stage 2: Questions
 │   │   │   ├── sow.py       # Stage 3: Scope of Work
 │   │   │   ├── sprint.py    # Stage 4: Sprint Planning
-│   │   │   └── jira.py      # Stage 5: Jira Integration
+│   │   │   └── jira_sync.py # Stage 5: Jira Integration
 │   │   ├── prompts/         # LLM prompts for each stage
 │   │   │   ├── extraction_enhanced.py
 │   │   │   ├── clarification.py
@@ -218,7 +222,7 @@ draft_sow → review_sow → revise_sow → review_sow
     ↓
 plan_sprints → review_sprint_plan → adjust_sprints → review_sprint_plan
     ↓
-configure_jira → preview_jira → sync_to_jira
+configure_jira → preview_jira → sync_to_jira_batch (epics → issues → sprints)
 ```
 
 **Key Function:**
@@ -341,6 +345,14 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 # Gemini (optional)
 GEMINI_API_KEY=...
+
+# Project storage backend (memory | mongo)
+PROJECT_STORAGE_BACKEND=memory
+
+# Mongo (required only for PROJECT_STORAGE_BACKEND=mongo)
+MONGODB_URI=mongodb://localhost:27017
+MONGODB_DATABASE=meeting_intelligence
+MONGODB_COLLECTION=projects
 ```
 
 ---
@@ -413,7 +425,7 @@ Two transcripts are provided:
 1. **LLM Dependency**: Quality depends on model capability (llama3.2:3b recommended for Ollama)
 2. **Long Transcripts**: >25 min may need topic-based preprocessing (implemented but not battle-tested)
 3. **Jira Rate Limits**: Free accounts have strict limits, backoff implemented but may be slow
-4. **Session Persistence**: Page refresh wipes progress (state is in-memory, not database-backed)
+4. **Persistence Backend Default**: Default `memory` backend loses state on backend restart; use `mongo` backend for durable storage
 5. **Concurrent Projects**: No locking, possible race conditions if multiple users edit same project
 
 ---
@@ -421,7 +433,7 @@ Two transcripts are provided:
 ## 🔮 Future Enhancements
 
 ### Phase 2 (Post-Assessment)
-- Database persistence (PostgreSQL + SQLAlchemy)
+- Persistence hardening (indexes, retention, backup/restore docs)
 - User authentication
 - Project history/audit trail
 - Export to PDF (SoW)

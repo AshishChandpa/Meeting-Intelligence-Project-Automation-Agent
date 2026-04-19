@@ -21,6 +21,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent.config import settings
+from agent.storage.factory import create_project_repository
 from agent.nodes.parse import apply_corrections, parse_transcript
 from agent.nodes.clarify import answer_human_question, generate_questions, process_answer
 from agent.nodes.sow import draft_sow, revise_sow, sow_missing_sections
@@ -31,9 +32,9 @@ from agent.state import Extraction
 logger = logging.getLogger(__name__)
 
 
-# ── In-memory project storage ─────────────────────────────────────────────
+# ── Project storage + SSE subscribers ─────────────────────────────────────
 
-projects: dict[str, dict[str, Any]] = {}
+project_repo = create_project_repository(settings)
 project_event_subscribers: dict[str, list[asyncio.Queue[tuple[str, dict[str, Any]]]]] = {}
 
 
@@ -94,6 +95,7 @@ async def lifespan(app: FastAPI):
     """Manage startup/shutdown for the FastAPI app."""
     logger.info("Starting Meeting Intelligence API...")
     logger.info("LLM Provider: %s", settings.llm_provider)
+    logger.info("Storage Backend: %s", settings.project_storage_backend)
     yield
     logger.info("Shutting down Meeting Intelligence API...")
 
@@ -121,9 +123,10 @@ app.add_middleware(
 
 def get_project(project_id: str) -> dict[str, Any]:
     """Get a project by ID or raise 404."""
-    if project_id not in projects:
+    project = project_repo.get(project_id)
+    if project is None:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-    return projects[project_id]
+    return project
 
 
 def project_to_response(project: dict[str, Any]) -> dict[str, Any]:
@@ -163,16 +166,20 @@ async def publish_project_event(project_id: str, event: str, payload: dict[str, 
 
 
 async def publish_project_state(project_id: str) -> None:
-    project = projects.get(project_id)
+    project = project_repo.get(project_id)
     if not project:
         return
+    project_repo.upsert(project)
     await publish_project_event(project_id, "project_state", project_to_response(project))
 
 
 def update_project_state(project_id: str, updates: dict[str, Any]) -> None:
     """Update project state with new values."""
-    if project_id in projects:
-        projects[project_id]["state"].update(updates)
+    project = project_repo.get(project_id)
+    if project is None:
+        return
+    project["state"].update(updates)
+    project_repo.upsert(project)
 
 
 def _jira_batch_status(state: dict[str, Any]) -> dict[str, str]:
@@ -202,7 +209,8 @@ async def health_check():
     return {
         "status": "healthy",
         "llm_provider": settings.llm_provider,
-        "projects_count": len(projects),
+        "projects_count": project_repo.count(),
+        "storage_backend": settings.project_storage_backend,
     }
 
 
@@ -230,7 +238,7 @@ async def create_project(request: CreateProjectRequest):
         "jira_config": None,
     }
 
-    projects[project_id] = project
+    project_repo.upsert(project)
     await publish_project_event(project_id, "stage_started", {"stage": "parse"})
 
     # Run Stage 1: Parse transcript
@@ -252,7 +260,7 @@ async def create_project(request: CreateProjectRequest):
         )
 
     except Exception as e:
-        projects.pop(project_id, None)
+        project_repo.delete(project_id)
         logger.exception("Failed to create project")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -267,7 +275,7 @@ async def list_projects():
             "current_stage": p["state"].get("current_stage", "unknown"),
             "created_at": p.get("created_at"),
         }
-        for p in projects.values()
+        for p in project_repo.list_all()
     ]
 
 
@@ -309,10 +317,8 @@ async def stream_project_state(project_id: str):
 @app.delete("/api/projects/{project_id}")
 async def delete_project(project_id: str):
     """Delete a project."""
-    if project_id not in projects:
+    if not project_repo.delete(project_id):
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-
-    del projects[project_id]
     project_event_subscribers.pop(project_id, None)
     return {"message": f"Project {project_id} deleted"}
 

@@ -53,7 +53,7 @@ Each stage is a distinct node in a LangGraph state machine. Nothing advances wit
 | LLM (cloud) | OpenAI / Anthropic / Gemini via LiteLLM (configurable) |
 | Structured output | `langchain-ollama` with `with_structured_output()` |
 | Jira integration | Atlassian REST API v3 + Agile API via `httpx` |
-| State persistence | In-memory for demo (MongoDB planned for production) |
+| State persistence | Configurable: in-memory (default) or MongoDB |
 | State management (frontend) | Zustand |
 
 ---
@@ -152,6 +152,16 @@ Edit `.env` with your settings:
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=llama3.2:3b
+PROJECT_STORAGE_BACKEND=memory
+```
+
+To persist project state across backend restarts, switch to MongoDB:
+
+```env
+PROJECT_STORAGE_BACKEND=mongo
+MONGODB_URI=mongodb://localhost:27017
+MONGODB_DATABASE=meeting_intelligence
+MONGODB_COLLECTION=projects
 ```
 
 To use a cloud LLM instead:
@@ -311,6 +321,10 @@ Creation is intentionally gated by batch in the UI: Epics must complete before I
 | `JIRA_EMAIL` | For Stage 5 | Your Atlassian account email |
 | `JIRA_API_TOKEN` | For Stage 5 | From id.atlassian.com/manage-api-tokens |
 | `JIRA_PROJECT_KEY` | For Stage 5 | e.g. `MIP` |
+| `PROJECT_STORAGE_BACKEND` | No | `memory` (default) or `mongo` |
+| `MONGODB_URI` | If Mongo | MongoDB connection string |
+| `MONGODB_DATABASE` | If Mongo | Database name (default `meeting_intelligence`) |
+| `MONGODB_COLLECTION` | If Mongo | Collection name (default `projects`) |
 | `LANGCHAIN_TRACING_V2` | No | Set `true` to enable LangSmith tracing |
 | `LANGCHAIN_API_KEY` | If tracing | Your LangSmith API key |
 
@@ -318,7 +332,9 @@ Creation is intentionally gated by batch in the UI: Epics must complete before I
 
 ## Design Decisions
 
-**LangGraph over a custom state machine** — The 5-stage pipeline with approval gates maps naturally to LangGraph's `StateGraph`. `interrupt()` handles human pauses natively, and the built-in checkpointer gives us session persistence (page refresh = no lost progress) without any extra infrastructure.
+**LangGraph over a custom state machine** — The 5-stage pipeline with approval gates maps naturally to LangGraph's `StateGraph`. `interrupt()` semantics map cleanly to approval checkpoints, while the API layer handles stage transitions explicitly.
+
+**Configurable persistence backend** — Project state storage is backend-driven via `PROJECT_STORAGE_BACKEND` (`memory` or `mongo`). `memory` keeps local setup simple; `mongo` adds restart-safe persistence without changing API contracts.
 
 **`langchain-ollama` with `with_structured_output()`** — Rather than prompting the model to return JSON and hoping it complies, `with_structured_output()` uses Ollama's native schema-constrained decoding. This makes structured extraction reliable even on smaller models.
 
@@ -331,7 +347,7 @@ Creation is intentionally gated by batch in the UI: Epics must complete before I
 ## Known Limitations
 
 - **Local model quality** — Base `mistral` produces weak structured extractions. Use `llama3.2:3b` or higher for reliable Stage 1 output.
-- **State persistence** — Currently using in-memory storage. For production use, MongoDB or PostgreSQL should be added for persistent state.
+- **State persistence** — `memory` is still the default backend. Use `mongo` backend in `.env` for restart-safe persistence.
 - **Jira Scrum board required** — Sprint creation via the Agile API requires a Scrum-type board. Kanban-only projects won't support Stage 5 sprints.
 - **Long transcripts** — Very long transcripts (>8k tokens) may hit context limits on smaller local models. Chunking support is planned.
 - **No real-time streaming** — AI responses are shown when complete, not streamed. SSE streaming can be added for better UX.
@@ -366,7 +382,7 @@ npm run build
 
 ## What's Remaining
 
-- [ ] Add MongoDB for persistent state storage
+- [ ] Add MongoDB indexes/backups + operational docs for production-grade persistence
 - [ ] Implement SSE streaming for real-time AI output
 - [ ] Add transcript chunking for long inputs
 - [ ] Add end-to-end tests

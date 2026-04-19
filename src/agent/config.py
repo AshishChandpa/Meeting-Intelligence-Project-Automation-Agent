@@ -48,6 +48,20 @@ class Settings:
         default_factory=lambda: os.getenv("JIRA_PROJECT_KEY", "")
     )
 
+    # Project persistence backend: "memory" | "mongo"
+    project_storage_backend: str = field(
+        default_factory=lambda: os.getenv("PROJECT_STORAGE_BACKEND", "memory")
+    )
+    mongodb_uri: str = field(
+        default_factory=lambda: os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+    )
+    mongodb_database: str = field(
+        default_factory=lambda: os.getenv("MONGODB_DATABASE", "meeting_intelligence")
+    )
+    mongodb_collection: str = field(
+        default_factory=lambda: os.getenv("MONGODB_COLLECTION", "projects")
+    )
+
     @property
     def jira_config_from_env(self) -> dict:
         """Return Jira config dict if all env vars are set, else empty dict."""
