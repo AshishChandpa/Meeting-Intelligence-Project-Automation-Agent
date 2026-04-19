@@ -13,7 +13,7 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,7 +25,7 @@ from agent.nodes.parse import apply_corrections, parse_transcript
 from agent.nodes.clarify import answer_human_question, generate_questions, process_answer
 from agent.nodes.sow import draft_sow, revise_sow, sow_missing_sections
 from agent.nodes.sprint import adjust_sprint_plan, generate_sprint_plan, move_task_between_sprints
-from agent.nodes.jira_sync import sync_to_jira
+from agent.nodes.jira_sync import build_jira_preview, sync_to_jira, sync_to_jira_batch
 from agent.state import Extraction
 
 logger = logging.getLogger(__name__)
@@ -78,6 +78,13 @@ class JiraConfigRequest(BaseModel):
 class MoveTaskRequest(BaseModel):
     task_id: str
     sprint_name: str
+
+
+class JiraBatchSyncResponse(BaseModel):
+    message: str
+    batch: Literal["epics", "issues", "sprints"]
+    results: list[dict[str, Any]]
+    batch_status: dict[str, str]
 
 
 # ── Lifespan management ───────────────────────────────────────────────────
@@ -135,6 +142,7 @@ def project_to_response(project: dict[str, Any]) -> dict[str, Any]:
         "sprints": state.get("sprints", []),
         "sprint_warnings": state.get("sprint_warnings", []),
         "jira_results": state.get("jira_results", []),
+        "jira_batch_status": _jira_batch_status(state),
         "stage1_approved": state.get("stage1_approved", False),
         "stage2_approved": state.get("stage2_approved", False),
         "stage3_approved": state.get("stage3_approved", False),
@@ -165,6 +173,25 @@ def update_project_state(project_id: str, updates: dict[str, Any]) -> None:
     """Update project state with new values."""
     if project_id in projects:
         projects[project_id]["state"].update(updates)
+
+
+def _jira_batch_status(state: dict[str, Any]) -> dict[str, str]:
+    return dict(state.get("jira_batch_status", {}))
+
+
+def _is_batch_allowed(state: dict[str, Any], batch: str) -> tuple[bool, str]:
+    status = _jira_batch_status(state)
+    if batch == "epics":
+        return True, ""
+    if batch == "issues":
+        if status.get("epics") != "done":
+            return False, "Please complete Epics sync first"
+        return True, ""
+    if batch == "sprints":
+        if status.get("issues") != "done":
+            return False, "Please complete Issues sync first"
+        return True, ""
+    return False, "Invalid batch"
 
 
 # ── REST endpoints ───────────────────────────────────────────────────────
@@ -570,8 +597,15 @@ async def set_jira_config(project_id: str, request: JiraConfigRequest):
         "api_token": request.api_token,
         "project_key": request.project_key,
     }
+    # Reset previous Jira sync progress when config/project changes.
+    project["state"]["jira_results"] = []
+    project["state"]["jira_batch_status"] = {}
+    project["state"]["jira_epic_key_by_module"] = {}
+    project["state"]["jira_issue_id_by_task"] = {}
+    project["state"].pop("jira_board_id", None)
 
     await publish_project_event(project_id, "jira_config_saved", {"project_id": project_id})
+    await publish_project_state(project_id)
 
     return {"message": "Jira config saved"}
 
@@ -586,9 +620,15 @@ async def test_jira_connection(project_id: str):
         raise HTTPException(status_code=400, detail="Jira config not set")
 
     try:
-        from agent.jira import test_connection
+        from agent.jira import JiraClient
 
-        await test_connection(jira_config)
+        client = JiraClient(
+            domain=jira_config["domain"],
+            email=jira_config["email"],
+            api_token=jira_config["api_token"],
+            project_key=jira_config["project_key"],
+        )
+        client.test_connection()
         return {"message": "Jira connection successful"}
 
     except Exception as e:
@@ -602,15 +642,53 @@ async def get_jira_preview(project_id: str):
     project = get_project(project_id)
     state = project["state"]
 
-    tasks = state.get("tasks", [])
-    sprints = state.get("sprints", [])
-
+    preview = build_jira_preview(state)
     return {
-        "epics": list({t.get("module") for t in tasks}),
-        "issues": len(tasks),
-        "sprints": len(sprints),
-        "tasks": tasks,
+        **preview,
+        "counts": {
+            "epics": len(preview["epics"]),
+            "issues": len(preview["issues"]),
+            "sprints": len(preview["sprints"]),
+        },
+        "batch_status": _jira_batch_status(state),
     }
+
+
+@app.post("/api/projects/{project_id}/jira/sync/{batch}", response_model=JiraBatchSyncResponse)
+async def sync_to_jira_batch_endpoint(project_id: str, batch: Literal["epics", "issues", "sprints"]):
+    """Sync one Jira batch only (epics -> issues -> sprints)."""
+    project = get_project(project_id)
+    jira_config = project.get("jira_config")
+
+    if not jira_config:
+        raise HTTPException(status_code=400, detail="Jira config not set. Please set it first.")
+
+    allowed, message = _is_batch_allowed(project["state"], batch)
+    if not allowed:
+        raise HTTPException(status_code=400, detail=message)
+
+    try:
+        state = project["state"].copy()
+        state["jira_config"] = jira_config
+        result = sync_to_jira_batch(state, batch)
+        project["state"].update(result)
+
+        if batch == "sprints" and project["state"].get("jira_batch_status", {}).get("sprints") == "done":
+            project["state"]["stage5_done"] = True
+            project["state"]["current_stage"] = "done"
+            await publish_project_event(project_id, "stage_completed", {"stage": "done"})
+
+        await publish_project_state(project_id)
+        return JiraBatchSyncResponse(
+            message=f"{batch.title()} batch synced",
+            batch=batch,
+            results=result.get("jira_results", []),
+            batch_status=_jira_batch_status(project["state"]),
+        )
+
+    except Exception as e:
+        logger.exception("Failed to sync Jira batch '%s'", batch)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/projects/{project_id}/jira/sync")

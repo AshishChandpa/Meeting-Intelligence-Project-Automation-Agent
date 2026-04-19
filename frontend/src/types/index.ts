@@ -8,6 +8,8 @@ export type RequirementType = "Functional" | "Non-Functional" | "Integration"
 export type TaskType = "Epic" | "Story" | "Task"
 export type QuestionStatus = "open" | "answered" | "skipped"
 export type StoryPoints = 1 | 2 | 3 | 5 | 8 | 13
+export type JiraBatch = "epics" | "issues" | "sprints"
+export type JiraBatchState = "pending" | "done" | "failed"
 
 // ── Stage 1: Extraction types ────────────────────────────────────────────────
 
@@ -117,6 +119,25 @@ export interface JiraResult {
   error: string
 }
 
+export interface JiraPreview {
+  epics: Array<{ module: string; title: string }>
+  issues: Array<{ task_id: string; title: string; module: string; type: string }>
+  sprints: Array<{ name: string; goal: string; task_ids: string[] }>
+  counts: {
+    epics: number
+    issues: number
+    sprints: number
+  }
+  batch_status: Partial<Record<JiraBatch, JiraBatchState>>
+}
+
+export interface JiraBatchSyncResponse {
+  message: string
+  batch: JiraBatch
+  results: JiraResult[]
+  batch_status: Partial<Record<JiraBatch, JiraBatchState>>
+}
+
 // ── Full Project State ──────────────────────────────────────────────────────
 
 export interface ProjectState {
@@ -132,6 +153,7 @@ export interface ProjectState {
   sprints?: Sprint[]
   sprint_warnings?: string[]
   jira_results?: JiraResult[]
+  jira_batch_status?: Partial<Record<JiraBatch, JiraBatchState>>
   stage1_approved?: boolean
   stage2_approved?: boolean
   stage3_approved?: boolean

@@ -29,12 +29,13 @@ Stage 3 — Scope of Work
 Stage 4 — Sprint Planning
   AI breaks SoW into tasks with story points, dependencies, and
   acceptance criteria. Organises into 2-week sprints (max 40pts).
-  → Human adjusts plan, then approves
+  → Human adjusts plan (drag/drop or manual move), then approves
       │
       ▼
 Stage 5 — Jira Sync
-  Preview shown before any write. Creates Epics → Issues → Sprints.
-  → Human confirms, live progress shown, summary with links on completion
+  Preview shown before any write. Sync runs in confirmed batches:
+  Epics → Issues → Sprints.
+  → Human confirms each batch, progress is preserved, summary with links on completion
 ```
 
 Each stage is a distinct node in a LangGraph state machine. Nothing advances without an explicit human approval.
@@ -225,6 +226,8 @@ The frontend will be available at `http://localhost:5173`.
 - Review the generated tasks and sprints
 - Each task has story points, dependencies, and acceptance criteria
 - Warnings are shown if sprints exceed 40 points
+- Move tasks between sprints with drag-and-drop
+- You can still use the "Move" dropdown/button as a fallback
 - Request adjustments in plain text if needed
 - Click "Approve & Continue to Jira" when satisfied
 
@@ -233,7 +236,9 @@ The frontend will be available at `http://localhost:5173`.
 - Enter your Jira credentials (domain, email, API token, project key)
 - Click "Test Connection" to verify
 - Preview what will be created (epics, issues, sprints)
-- Click "Sync to Jira" to create everything
+- Confirm and run **Create Epics**
+- Confirm and run **Create Issues**
+- Confirm and run **Create Sprints**
 - View results with direct links to each created issue
 
 ---
@@ -272,6 +277,8 @@ The frontend will be available at `http://localhost:5173`.
 - **Epics** — one per module (e.g. Returns Management, User Authentication)
 - **Stories / Tasks** — one per task, linked to their parent Epic
 - **Sprints** — named with a goal (e.g. "Sprint 1 — Returns Core"), populated with issues
+
+Creation is intentionally gated by batch in the UI: Epics must complete before Issues, and Issues must complete before Sprints.
 
 ### Configuration Fields
 

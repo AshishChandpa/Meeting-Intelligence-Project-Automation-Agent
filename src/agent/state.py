@@ -170,4 +170,9 @@ class PipelineState(MessagesState):
     # ── Stage 5: Jira ──
     jira_config: dict = Field(default_factory=dict)       # JiraConfig
     jira_results: Annotated[list[dict], operator.add] = Field(default_factory=list)
+    # Track staged Jira sync progress/state for batch-confirmed creation flow.
+    jira_batch_status: dict[str, str] = Field(default_factory=dict)      # epics|issues|sprints -> pending|done|failed
+    jira_epic_key_by_module: dict[str, str] = Field(default_factory=dict)
+    jira_issue_id_by_task: dict[str, str] = Field(default_factory=dict)
+    jira_board_id: int | None = None
     stage5_done: bool = False

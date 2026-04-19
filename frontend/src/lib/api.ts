@@ -5,6 +5,9 @@ import type {
   AnswerRequest,
   SkipRequest,
   JiraConfigRequest,
+  JiraPreview,
+  JiraBatchSyncResponse,
+  JiraBatch,
   ProjectState,
   ProjectListItem,
 } from '@/types'
@@ -142,13 +145,16 @@ export async function testJiraConnection(projectId: string): Promise<{ message: 
   return response.data
 }
 
-export async function getJiraPreview(projectId: string): Promise<{
-  epics: string[]
-  issues: number
-  sprints: number
-  tasks: any[]
-}> {
+export async function getJiraPreview(projectId: string): Promise<JiraPreview> {
   const response = await api.get(`/api/projects/${projectId}/jira/preview`)
+  return response.data
+}
+
+export async function syncToJiraBatch(
+  projectId: string,
+  batch: JiraBatch,
+): Promise<JiraBatchSyncResponse> {
+  const response = await api.post(`/api/projects/${projectId}/jira/sync/${batch}`)
   return response.data
 }
 

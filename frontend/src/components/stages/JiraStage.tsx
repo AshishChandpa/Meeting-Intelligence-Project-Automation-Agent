@@ -1,11 +1,11 @@
 import { useState } from 'react'
 import { useProjectStore } from '@/store/projectStore'
-import { getProject, setJiraConfig, testJiraConnection, getJiraPreview, syncToJira } from '@/lib/api'
+import { getProject, setJiraConfig, testJiraConnection, getJiraPreview, syncToJiraBatch } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
 import { Loader2, ExternalLink, CheckCircle2, XCircle } from 'lucide-react'
-import type { JiraConfig, JiraResult } from '@/types'
+import type { JiraConfig, JiraPreview, JiraResult } from '@/types'
 
 export function JiraStage() {
   const { currentProject, setCurrentProject, setIsLoading, setError } = useProjectStore()
@@ -18,7 +18,8 @@ export function JiraStage() {
   const [isTesting, setIsTesting] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
-  const [preview, setPreview] = useState<any>(null)
+  const [preview, setPreview] = useState<JiraPreview | null>(null)
+  const [activeBatch, setActiveBatch] = useState<'epics' | 'issues' | 'sprints' | null>(null)
 
   const jiraResults = currentProject?.jira_results || []
 
@@ -66,22 +67,30 @@ export function JiraStage() {
     }
   }
 
-  const handleSync = async () => {
+  const handleSyncBatch = async (batch: 'epics' | 'issues' | 'sprints') => {
     if (!currentProject) return
 
-    if (!confirm('This will create issues in Jira. Are you sure?')) return
+    if (!confirm(`This will create ${batch} in Jira. Continue?`)) return
 
     try {
       setIsSyncing(true)
-      await syncToJira(currentProject.id)
+      setActiveBatch(batch)
+      await syncToJiraBatch(currentProject.id, batch)
       const updated = await getProject(currentProject.id)
       setCurrentProject(updated)
+      await loadPreview()
     } catch (error: any) {
-      setError(`Failed to sync to Jira: ${error}`)
+      setError(`Failed to sync ${batch}: ${error}`)
     } finally {
       setIsSyncing(false)
+      setActiveBatch(null)
     }
   }
+
+  const batchStatus = currentProject?.jira_batch_status || preview?.batch_status || {}
+  const epicsDone = batchStatus.epics === 'done'
+  const issuesDone = batchStatus.issues === 'done'
+  const sprintsDone = batchStatus.sprints === 'done'
 
   return (
     <Card>
@@ -159,32 +168,54 @@ export function JiraStage() {
             <div className="grid grid-cols-3 gap-4">
               <div>
                 <p className="text-sm text-muted-foreground">Epics</p>
-                <p className="text-xl font-bold">{preview.epics.length}</p>
+                <p className="text-xl font-bold">{preview.counts.epics}</p>
                 <ul className="mt-1 text-xs">
-                  {preview.epics.map((epic: string, i: number) => (
-                    <li key={i}>{epic}</li>
+                  {preview.epics.map((epic, i: number) => (
+                    <li key={i}>{epic.title}</li>
                   ))}
                 </ul>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Issues</p>
-                <p className="text-xl font-bold">{preview.issues}</p>
+                <p className="text-xl font-bold">{preview.counts.issues}</p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Sprints</p>
-                <p className="text-xl font-bold">{preview.sprints}</p>
+                <p className="text-xl font-bold">{preview.counts.sprints}</p>
               </div>
             </div>
           </div>
         )}
 
-        {/* Sync Button */}
-        {preview && jiraResults.length === 0 && (
-          <div className="flex justify-end border-t pt-4">
-            <Button onClick={handleSync} disabled={isSyncing} size="lg">
-              {isSyncing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Sync to Jira
-            </Button>
+        {/* Batch sync controls */}
+        {preview && (
+          <div className="space-y-3 border-t pt-4">
+            <h3 className="font-semibold">Sync Batches (Confirm each step)</h3>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+              <Button onClick={() => handleSyncBatch('epics')} disabled={isSyncing || epicsDone}>
+                {isSyncing && activeBatch === 'epics' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {epicsDone ? 'Epics Created' : 'Create Epics'}
+              </Button>
+              <Button
+                onClick={() => handleSyncBatch('issues')}
+                disabled={isSyncing || !epicsDone || issuesDone}
+                variant="secondary"
+              >
+                {isSyncing && activeBatch === 'issues' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {issuesDone ? 'Issues Created' : 'Create Issues'}
+              </Button>
+              <Button
+                onClick={() => handleSyncBatch('sprints')}
+                disabled={isSyncing || !issuesDone || sprintsDone}
+                variant="outline"
+              >
+                {isSyncing && activeBatch === 'sprints' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {sprintsDone ? 'Sprints Created' : 'Create Sprints'}
+              </Button>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Current status: epics={batchStatus.epics || 'pending'}, issues={batchStatus.issues || 'pending'}, sprints={batchStatus.sprints || 'pending'}
+            </p>
           </div>
         )}
 

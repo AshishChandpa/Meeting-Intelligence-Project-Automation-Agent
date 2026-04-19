@@ -13,6 +13,8 @@ export function SprintStage() {
   const [feedback, setFeedback] = useState('')
   const [taskTargets, setTaskTargets] = useState<Record<string, string>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null)
+  const [dragOverSprint, setDragOverSprint] = useState<string | null>(null)
 
   const tasks = currentProject?.tasks || []
   const sprints = currentProject?.sprints || []
@@ -72,6 +74,25 @@ export function SprintStage() {
     }
   }
 
+  const handleDropTask = async (taskId: string, targetSprint: string, currentSprint: string) => {
+    if (!currentProject || targetSprint === currentSprint || isSubmitting) return
+
+    try {
+      setIsSubmitting(true)
+      setIsLoading(true)
+      await moveSprintTask(currentProject.id, { task_id: taskId, sprint_name: targetSprint })
+      const updated = await getProject(currentProject.id)
+      setCurrentProject(updated)
+    } catch (error: any) {
+      setError(`Failed to move task: ${error}`)
+    } finally {
+      setIsSubmitting(false)
+      setIsLoading(false)
+      setDraggingTaskId(null)
+      setDragOverSprint(null)
+    }
+  }
+
   const getTaskById = (id: string) => tasks.find((t: Task) => t.id === id)
 
   return (
@@ -116,7 +137,27 @@ export function SprintStage() {
         {/* Sprints */}
         <div className="space-y-4">
           {sprints.map((sprint: Sprint, i: number) => (
-            <div key={i} className="rounded-md border p-4">
+            <div
+              key={i}
+              className={`rounded-md border p-4 transition-colors ${dragOverSprint === sprint.name ? 'border-primary bg-primary/5' : ''}`}
+              onDragOver={(e) => {
+                e.preventDefault()
+                if (!draggingTaskId || isSubmitting) return
+                setDragOverSprint(sprint.name)
+              }}
+              onDragLeave={() => {
+                if (dragOverSprint === sprint.name) {
+                  setDragOverSprint(null)
+                }
+              }}
+              onDrop={async (e) => {
+                e.preventDefault()
+                const taskId = e.dataTransfer.getData('text/task-id') || draggingTaskId
+                if (!taskId) return
+                const sourceSprint = e.dataTransfer.getData('text/source-sprint')
+                await handleDropTask(taskId, sprint.name, sourceSprint)
+              }}
+            >
               <div className="mb-3 flex items-center justify-between">
                 <div>
                   <h3 className="font-semibold">{sprint.name}</h3>
@@ -129,7 +170,21 @@ export function SprintStage() {
                   const task = getTaskById(taskId)
                   if (!task) return null
                   return (
-                    <div key={task.id} className="rounded-md bg-muted p-3">
+                    <div
+                      key={task.id}
+                      className={`rounded-md bg-muted p-3 ${draggingTaskId === task.id ? 'opacity-60' : ''}`}
+                      draggable={!isSubmitting}
+                      onDragStart={(e) => {
+                        setDraggingTaskId(task.id)
+                        e.dataTransfer.setData('text/task-id', task.id)
+                        e.dataTransfer.setData('text/source-sprint', sprint.name)
+                        e.dataTransfer.effectAllowed = 'move'
+                      }}
+                      onDragEnd={() => {
+                        setDraggingTaskId(null)
+                        setDragOverSprint(null)
+                      }}
+                    >
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
                           <div className="flex items-center gap-2">
