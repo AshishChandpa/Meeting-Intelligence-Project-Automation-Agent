@@ -12,13 +12,19 @@ from __future__ import annotations
 
 from typing import Literal
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, StateGraph
 from langgraph.types import Command, interrupt
 
 from agent.config import settings
 from agent.nodes.clarify import generate_questions, process_answer
-from agent.nodes.jira_sync import sync_to_jira
+from agent.nodes.jira_sync import (
+    create_epics_batch,
+    create_issues_batch,
+    create_sprints_batch,
+    prepare_jira_batch_preview,
+    sync_to_jira,
+)
 from agent.nodes.parse import apply_corrections, parse_transcript
 from agent.nodes.sow import draft_sow, revise_sow
 from agent.nodes.sprint import adjust_sprint_plan, generate_sprint_plan
@@ -144,42 +150,60 @@ def stage4_done(state: PipelineState) -> dict:
     return {"stage4_approved": True, "current_stage": "jira"}
 
 
-# ── Stage 5 human gate ─────────────────────────────────────────────────
+# ── Stage 5 graphized batch flow ───────────────────────────────────────
 
-def review_jira(state: PipelineState) -> Command[Literal["sync_to_jira", "__end__"]]:
-    """Show Jira preview and ask for confirmation before writing."""
-    tasks = state["tasks"]
-    sprints = state["sprints"]
-    # Prefer state config, fall back to env vars
+def preview_jira_epics(state: PipelineState) -> dict:
+    return prepare_jira_batch_preview(state, "epics")
+
+
+def preview_jira_issues(state: PipelineState) -> dict:
+    return prepare_jira_batch_preview(state, "issues")
+
+
+def preview_jira_sprints(state: PipelineState) -> dict:
+    return prepare_jira_batch_preview(state, "sprints")
+
+
+def _review_jira_batch(state: PipelineState, batch: Literal["epics", "issues", "sprints"], goto_node: str):
     cfg = state.get("jira_config") or settings.jira_config_from_env
+    preview = state.get("jira_preview") or {}
+    user_input = interrupt(
+        {
+            "stage": "jira",
+            "batch": batch,
+            "message": f"Preview ready for Jira {batch}. Confirm to continue.",
+            "preview": preview,
+            "jira_config_required": not bool(cfg),
+        }
+    )
 
-    user_input = interrupt({
-        "stage": "jira",
-        "message": (
-            f"Ready to create {len(tasks)} issues across {len(sprints)} sprints "
-            f"in Jira project '{cfg.get('project_key', '?')}'. "
-            "Type 'confirm' to proceed or provide your Jira config first."
-        ),
-        "preview": {
-            "epics": list({t["module"] for t in tasks}),
-            "issues": len(tasks),
-            "sprints": len(sprints),
-        },
-        "jira_config_required": not bool(cfg),
-    })
-
-    val = str(user_input).strip().lower()
-    if val == "confirm" and cfg:
-        return Command(goto="sync_to_jira")
-
-    # If user provided jira config as a dict
     if isinstance(user_input, dict) and "domain" in user_input:
-        return Command(
-            goto="sync_to_jira",
-            update={"jira_config": user_input},
-        )
+        return Command(goto=goto_node, update={"jira_config": user_input})
 
-    return Command(goto="__end__")
+    if str(user_input).strip().lower() in {batch, f"confirm {batch}", "confirm"} and cfg:
+        return Command(goto=goto_node)
+
+    return Command(goto=f"review_jira_{batch}")
+
+
+def review_jira_epics(state: PipelineState) -> Command[Literal["create_jira_epics", "review_jira_epics"]]:
+    return _review_jira_batch(state, "epics", "create_jira_epics")
+
+
+def review_jira_issues(state: PipelineState) -> Command[Literal["create_jira_issues", "review_jira_issues"]]:
+    return _review_jira_batch(state, "issues", "create_jira_issues")
+
+
+def review_jira_sprints(state: PipelineState) -> Command[Literal["create_jira_sprints", "review_jira_sprints"]]:
+    return _review_jira_batch(state, "sprints", "create_jira_sprints")
+
+
+def stage5_done(state: PipelineState) -> dict:
+    return {
+        "stage5_done": True,
+        "current_stage": "done",
+        "messages": [AIMessage(content="Jira batch flow completed.")],
+    }
 
 
 # ── Graph assembly ─────────────────────────────────────────────────────
@@ -212,7 +236,16 @@ def build_graph(checkpointer=None):
     builder.add_node("stage4_done", stage4_done)
 
     # Stage 5
-    builder.add_node("review_jira", review_jira)
+    builder.add_node("preview_jira_epics", preview_jira_epics)
+    builder.add_node("review_jira_epics", review_jira_epics)
+    builder.add_node("create_jira_epics", create_epics_batch)
+    builder.add_node("preview_jira_issues", preview_jira_issues)
+    builder.add_node("review_jira_issues", review_jira_issues)
+    builder.add_node("create_jira_issues", create_issues_batch)
+    builder.add_node("preview_jira_sprints", preview_jira_sprints)
+    builder.add_node("review_jira_sprints", review_jira_sprints)
+    builder.add_node("create_jira_sprints", create_sprints_batch)
+    builder.add_node("stage5_done", stage5_done)
     builder.add_node("sync_to_jira", sync_to_jira)
 
     # ── Edges ──
@@ -238,9 +271,13 @@ def build_graph(checkpointer=None):
     # Stage 4 flow
     builder.add_edge("generate_sprint_plan", "review_sprint")
     builder.add_edge("adjust_sprint_plan", "review_sprint")
-    builder.add_edge("stage4_done", "review_jira")
+    builder.add_edge("stage4_done", "preview_jira_epics")
 
     # Stage 5 flow
+    builder.add_edge("preview_jira_epics", "review_jira_epics")
+    builder.add_edge("preview_jira_issues", "review_jira_issues")
+    builder.add_edge("preview_jira_sprints", "review_jira_sprints")
+    builder.add_edge("stage5_done", END)
     builder.add_edge("sync_to_jira", END)
 
     if checkpointer is not None:

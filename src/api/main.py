@@ -1,8 +1,7 @@
 """FastAPI backend wrapper for the LangGraph meeting intelligence pipeline.
 
-This backend manages the pipeline state and handles user interactions at each stage.
-Instead of using LangGraph's interrupt() (which requires LangGraph Studio/CLI),
-we manage the state transitions manually.
+This backend persists project state, resumes LangGraph interrupts from user actions,
+and streams project/runtime updates to the frontend.
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ from agent.storage.factory import create_project_repository
 from agent.nodes.clarify import answer_human_question
 from agent.nodes.sow import sow_missing_sections
 from agent.nodes.sprint import move_task_between_sprints
-from agent.nodes.jira_sync import build_jira_preview, sync_to_jira, sync_to_jira_batch
+from agent.nodes.jira_sync import build_jira_preview
 from agent.runtime import delete_graph_thread, run_graph, sync_project_with_graph, update_graph_state
 
 logger = logging.getLogger(__name__)
@@ -111,7 +110,7 @@ app = FastAPI(
 # CORS configuration for local development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"],
+    allow_origins=settings.cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -243,8 +242,25 @@ def _jira_batch_status(state: dict[str, Any]) -> dict[str, str]:
     return dict(state.get("jira_batch_status", {}))
 
 
+def _pending_jira_batch(state: dict[str, Any]) -> str:
+    for interrupt in state.get("pending_interrupts", []):
+        if interrupt.get("stage") == "jira" and interrupt.get("batch"):
+            return str(interrupt["batch"])
+    return ""
+
+
 def _is_batch_allowed(state: dict[str, Any], batch: str) -> tuple[bool, str]:
     status = _jira_batch_status(state)
+    if state.get("stage5_done"):
+        return False, "Jira sync already completed"
+
+    pending_batch = _pending_jira_batch(state)
+    if not pending_batch:
+        return False, "Jira sync is only available while Stage 5 is awaiting Jira batch confirmation"
+
+    if pending_batch != batch:
+        return False, f"Current Jira review step expects '{pending_batch}' first"
+
     if batch == "epics":
         return True, ""
     if batch == "issues":
@@ -258,6 +274,20 @@ def _is_batch_allowed(state: dict[str, Any], batch: str) -> tuple[bool, str]:
     return False, "Invalid batch"
 
 
+def _remaining_jira_batches(state: dict[str, Any]) -> tuple[tuple[str, ...], str]:
+    if state.get("stage5_done"):
+        return (), "Jira sync already completed"
+
+    pending_batch = _pending_jira_batch(state)
+    if pending_batch:
+        order = ("epics", "issues", "sprints")
+        if pending_batch not in order:
+            return (), f"Unknown Jira batch '{pending_batch}' in pending interrupt state"
+        return tuple(order[order.index(pending_batch):]), ""
+
+    return (), "Jira sync is only available while Stage 5 is awaiting Jira batch confirmation"
+
+
 # ── REST endpoints ───────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -268,6 +298,7 @@ async def health_check():
         "llm_provider": settings.llm_provider,
         "projects_count": project_repo.count(),
         "storage_backend": settings.project_storage_backend,
+        "api_port": settings.api_port,
     }
 
 
@@ -697,23 +728,16 @@ async def sync_to_jira_batch_endpoint(project_id: str, batch: Literal["epics", "
         raise HTTPException(status_code=400, detail=message)
 
     try:
-        state = project["state"].copy()
-        state["jira_config"] = jira_config
-        result = sync_to_jira_batch(state, batch)
-        project["state"].update(result)
-        _sync_manual_graph_state(project_id, result)
+        await _run_graph_for_project(project, resume_value=batch)
 
-        if batch == "sprints" and project["state"].get("jira_batch_status", {}).get("sprints") == "done":
-            project["state"]["stage5_done"] = True
-            project["state"]["current_stage"] = "done"
-            _sync_manual_graph_state(project_id, {"stage5_done": True, "current_stage": "done"})
+        if batch == "sprints" and project["state"].get("stage5_done"):
             await publish_project_event(project_id, "stage_completed", {"stage": "done"})
 
         await publish_project_state(project_id)
         return JiraBatchSyncResponse(
             message=f"{batch.title()} batch synced",
             batch=batch,
-            results=result.get("jira_results", []),
+            results=project["state"].get("jira_last_batch_results", []),
             batch_status=_jira_batch_status(project["state"]),
         )
 
@@ -731,19 +755,21 @@ async def sync_to_jira_endpoint(project_id: str):
     if not jira_config:
         raise HTTPException(status_code=400, detail="Jira config not set. Please set it first.")
 
+    batches, message = _remaining_jira_batches(project["state"])
+    if not batches:
+        raise HTTPException(status_code=400, detail=message)
+
     try:
         await publish_project_event(project_id, "stage_started", {"stage": "done"})
-        # Add Jira config to state and run sync
-        state = project["state"].copy()
-        state["jira_config"] = jira_config
-
-        result = sync_to_jira(state)
-        project["state"].update(result)
-        project["state"]["stage5_done"] = True
-        _sync_manual_graph_state(project_id, result)
-        await publish_project_event(project_id, "stage_completed", {"stage": "done"})
+        for batch in batches:
+            await _run_graph_for_project(project, resume_value=batch)
+            if project["state"].get("jira_batch_status", {}).get(batch) != "done":
+                break
+        if project["state"].get("stage5_done"):
+            await publish_project_event(project_id, "stage_completed", {"stage": "done"})
         await publish_project_state(project_id)
-        return {"message": "Jira sync complete", "results": result.get("jira_results", [])}
+        message = "Jira sync complete" if project["state"].get("stage5_done") else "Jira sync paused - review failed batch and retry"
+        return {"message": message, "results": project["state"].get("jira_results", [])}
 
     except Exception as e:
         logger.exception("Failed to sync to Jira")
@@ -753,4 +779,4 @@ async def sync_to_jira_endpoint(project_id: str):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host=settings.api_host, port=settings.api_port)

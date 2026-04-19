@@ -54,6 +54,8 @@ Each stage is a distinct node in a LangGraph state machine. Nothing advances wit
 | Structured output | `langchain-ollama` with `with_structured_output()` |
 | Jira integration | Atlassian REST API v3 + Agile API via `httpx` |
 | State persistence | Configurable: in-memory (default) or MongoDB |
+| Runtime checkpoints | LangGraph checkpointer (`memory` or Mongo-backed) |
+| Streaming | SSE project state + runtime progress events |
 | State management (frontend) | Zustand |
 
 ---
@@ -181,10 +183,10 @@ ollama serve
 
 ```bash
 # From the project root
-uv run uvicorn src.api.main:app --reload --port 8000
+uv run uvicorn src.api.main:app --reload --host "${API_HOST:-127.0.0.1}" --port "${API_PORT:-8000}"
 ```
 
-The API will be available at `http://127.0.0.1:8000`.
+The API will be available at `http://${API_HOST:-127.0.0.1}:${API_PORT:-8000}`.
 
 ### 6. Start the frontend
 
@@ -195,11 +197,23 @@ cd frontend
 npm run dev
 ```
 
-The frontend will be available at `http://localhost:5173`.
+The frontend will be available at `http://localhost:${VITE_PORT:-5173}`.
 
 ---
 
 ## Using the Application
+
+### Runtime Behavior
+
+- **Stages 1-4** now execute through the LangGraph runtime, not just direct API-node calls
+- Human review steps are backed by **LangGraph interrupts** and resumed by the API with user input
+- Each project thread tracks checkpoint metadata such as:
+  - `graph_checkpoint_id`
+  - `graph_next_nodes`
+  - `pending_interrupts`
+  - `last_checkpoint_at`
+- SSE now streams both the latest `project_state` and runtime events like progress, completed nodes, checkpoint saves, interrupts, and LLM lifecycle events
+- **Stage 5** Jira creation now runs through graph-backed `preview_jira_*` → `review_jira_*` → `create_jira_*` batch nodes, with interrupt checkpoints and ordering guardrails between epics, issues, and sprints
 
 ### 1. Create a Project
 
@@ -276,6 +290,10 @@ The frontend will be available at `http://localhost:5173`.
 
 5. **Configure** — either in the web UI (Stage 5) or via `.env`:
    ```env
+   API_HOST=127.0.0.1
+   API_PORT=8000
+   VITE_PORT=5173
+   VITE_API_URL=http://127.0.0.1:8000
    JIRA_DOMAIN=yourcompany.atlassian.net
    JIRA_EMAIL=you@example.com
    JIRA_API_TOKEN=ATATT3yFfxf0Jm...
@@ -321,6 +339,11 @@ Creation is intentionally gated by batch in the UI: Epics must complete before I
 | `JIRA_EMAIL` | For Stage 5 | Your Atlassian account email |
 | `JIRA_API_TOKEN` | For Stage 5 | From id.atlassian.com/manage-api-tokens |
 | `JIRA_PROJECT_KEY` | For Stage 5 | e.g. `MIP` |
+| `API_HOST` | No | Backend bind host, default `127.0.0.1` |
+| `API_PORT` | No | Backend port, default `8000` |
+| `VITE_PORT` | No | Frontend dev server port, default `5173` |
+| `VITE_API_URL` | No | Frontend API base URL / Vite proxy target |
+| `CORS_ALLOWED_ORIGINS` | No | Optional comma-separated backend CORS override |
 | `PROJECT_STORAGE_BACKEND` | No | `memory` (default) or `mongo` |
 | `MONGODB_URI` | If Mongo | MongoDB connection string |
 | `MONGODB_DATABASE` | If Mongo | Database name (default `meeting_intelligence`) |
@@ -336,6 +359,10 @@ Creation is intentionally gated by batch in the UI: Epics must complete before I
 
 **Configurable persistence backend** — Project state storage is backend-driven via `PROJECT_STORAGE_BACKEND` (`memory` or `mongo`). `memory` keeps local setup simple; `mongo` adds restart-safe persistence without changing API contracts.
 
+**Checkpoint-aware runtime** — Stages 1-4 and the Stage 5 Jira write path run through a compiled LangGraph runtime with checkpoint persistence, so review steps can resume from saved interrupt state instead of replaying the whole pipeline.
+
+**SSE for state + progress** — The frontend receives both project snapshots and runtime events over SSE, which makes long-running LLM calls and graph node transitions visible while keeping the integration simpler than WebSockets.
+
 **`langchain-ollama` with `with_structured_output()`** — Rather than prompting the model to return JSON and hoping it complies, `with_structured_output()` uses Ollama's native schema-constrained decoding. This makes structured extraction reliable even on smaller models.
 
 **FastAPI + React** — FastAPI provides async support and automatic OpenAPI docs. React with TypeScript gives us type safety and a great developer experience. Zustand for state management keeps things simple without Redux overhead.
@@ -348,23 +375,31 @@ Creation is intentionally gated by batch in the UI: Epics must complete before I
 
 - **Local model quality** — Base `mistral` produces weak structured extractions. Use `llama3.2:3b` or higher for reliable Stage 1 output.
 - **State persistence** — `memory` is still the default backend. Use `mongo` backend in `.env` for restart-safe persistence.
+- **Stage 5 setup UX** — Jira config save, connection test, and preview retrieval remain API-facing helpers, but the actual Jira batch execution path now runs through graph interrupts, checkpoints, and enforced batch ordering.
 - **Jira Scrum board required** — Sprint creation via the Agile API requires a Scrum-type board. Kanban-only projects won't support Stage 5 sprints.
 - **Long transcripts** — Very long transcripts (>8k tokens) may hit context limits on smaller local models. Chunking support is planned.
-- **No real-time streaming** — AI responses are shown when complete, not streamed. SSE streaming can be added for better UX.
+- **Streaming granularity** — SSE now emits runtime progress events, but provider-level token streaming is not implemented yet.
 
 ---
 
 ## Development
 
-### Running tests
+### Running validation and smoke tests
 
 ```bash
-# Backend tests (when implemented)
-uv run pytest
+# Syntax-check the main backend/runtime files
+python3 -m py_compile src/api/main.py src/agent/runtime.py src/agent/graph.py src/agent/nodes/jira_sync.py
 
-# Frontend tests (when implemented)
+# Graph-backed API smoke test (mocked runtime / no real LLM required)
+PYTHONPATH=src python3 scripts/api_graph_runtime_smoke.py
+
+# Additional API / pipeline smoke helpers
+PYTHONPATH=src python3 scripts/api_smoke.py
+PYTHONPATH=src python3 scripts/api_stage_checks.py
+
+# Frontend production build validation
 cd frontend
-npm test
+npm run build
 ```
 
 ### Building for production
@@ -383,10 +418,10 @@ npm run build
 ## What's Remaining
 
 - [ ] Add MongoDB indexes/backups + operational docs for production-grade persistence
-- [ ] Implement SSE streaming for real-time AI output
+- [ ] Add finer-grained token streaming where provider support allows it
 - [ ] Add transcript chunking for long inputs
 - [ ] Add end-to-end tests
-- [ ] Create screen recording demo
+- [ ] Record the screen demo using `docs/SCREEN_RECORDING_DEMO_PACKAGING.md`
 - [ ] Add more comprehensive error handling
 - [ ] Add user authentication
 - [ ] Add more export formats (PDF, DOCX)

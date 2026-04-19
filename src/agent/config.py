@@ -62,6 +62,20 @@ class Settings:
         default_factory=lambda: os.getenv("MONGODB_COLLECTION", "projects")
     )
 
+    # Local app networking
+    api_host: str = field(
+        default_factory=lambda: os.getenv("API_HOST", "127.0.0.1")
+    )
+    api_port: int = field(
+        default_factory=lambda: int(os.getenv("API_PORT", "8000"))
+    )
+    frontend_port: int = field(
+        default_factory=lambda: int(os.getenv("VITE_PORT", "5173"))
+    )
+    cors_allowed_origins_raw: str = field(
+        default_factory=lambda: os.getenv("CORS_ALLOWED_ORIGINS", "")
+    )
+
     @property
     def jira_config_from_env(self) -> dict:
         """Return Jira config dict if all env vars are set, else empty dict."""
@@ -84,6 +98,16 @@ class Settings:
             "gemini": "gemini/gemini-2.0-flash",
         }
         return model_map.get(self.llm_provider, model_map["ollama"])
+
+    @property
+    def cors_allowed_origins(self) -> list[str]:
+        if self.cors_allowed_origins_raw.strip():
+            return [origin.strip() for origin in self.cors_allowed_origins_raw.split(",") if origin.strip()]
+        return [
+            f"http://localhost:{self.frontend_port}",
+            f"http://127.0.0.1:{self.frontend_port}",
+            "http://localhost:3000",
+        ]
 
 
 settings = Settings()

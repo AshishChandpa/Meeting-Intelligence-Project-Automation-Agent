@@ -25,15 +25,17 @@ This is a **5-stage pipeline application** that uses AI to extract project requi
 **Backend:**
 - **Python 3.13** with FastAPI
 - **LangGraph** for orchestration (state machine with interrupts)
+- **LangGraph Checkpointer** for resumable runtime state (`memory` or Mongo-backed)
 - **LangChain** for LLM abstraction (supports Ollama, OpenAI, Anthropic, Gemini)
 - **Pydantic** for structured output validation
 - **Uvicorn** ASGI server
 
 **Frontend:**
-- **React 19** with TypeScript
+- **React 18** with TypeScript
 - **Vite** for fast development
 - **TailwindCSS** for styling (via shadcn/ui components)
 - **Axios** for API calls
+- **Server-Sent Events (SSE)** for project-state and runtime progress streaming
 
 **LLM Support:**
 - Local: Ollama (llama3.2:3b recommended)
@@ -214,20 +216,29 @@ meeting-intelligence-project-automation-agent/
 
 ```python
 # Stage flow with human interrupts
-parse_transcript → validate_extraction → review_extraction
+parse_transcript → review_extraction
     ↓
-clarify_loop → generate_questions → review_questions
+generate_questions → review_clarification
     ↓
 draft_sow → review_sow → revise_sow → review_sow
     ↓
-plan_sprints → review_sprint_plan → adjust_sprints → review_sprint_plan
+generate_sprint_plan → review_sprint → adjust_sprint_plan → review_sprint
     ↓
-configure_jira → preview_jira → sync_to_jira_batch (epics → issues → sprints)
+preview_jira_epics → review_jira_epics → create_jira_epics
+    ↓
+preview_jira_issues → review_jira_issues → create_jira_issues
+    ↓
+preview_jira_sprints → review_jira_sprints → create_jira_sprints → stage5_done
 ```
 
 **Key Function:**
 - `interrupt()` - Pauses execution for human review
 - `Command[Literal["next_node"]]` - Routes to next node based on user input
+
+**Runtime Notes:**
+- Stages 1-4 plus the Stage 5 Jira batch write path are executed through the compiled LangGraph runtime and resumed via `Command(resume=...)`
+- Checkpoint metadata is surfaced back to the API as `graph_checkpoint_id`, `graph_next_nodes`, `pending_interrupts`, and `last_checkpoint_at`
+- Jira config save, connection testing, and preview retrieval remain API-facing helpers, while Jira writes execute through graph-backed preview/review/create nodes
 
 ---
 
@@ -297,6 +308,40 @@ Removed 15 duplicate requirements. Original: 45, Unique: 30
 - Error handling with try/catch
 - Automatic project refresh after mutations
 
+**Streaming Layer:** `frontend/src/hooks/useProjectStream.ts`
+- Subscribes to `project_state` plus runtime events such as `stage_progress`, `graph_node_finished`, `llm_start`, `llm_complete`, `checkpoint_saved`, `interrupt`, and `graph_error`
+- Updates Zustand with latest runtime progress and pending human-review status
+
+### Checkpoint & Resume Semantics
+
+**Runtime Helpers:** `src/agent/runtime.py`, `src/agent/checkpoints.py`
+
+**Behavior:**
+- Each project uses the project id as the LangGraph `thread_id`
+- `memory` backend uses LangGraph `InMemorySaver`
+- `mongo` backend persists checkpoints in a separate collection named `{MONGODB_COLLECTION}_checkpoints`
+- API endpoints resume graph execution with the user's approval/feedback payload instead of replaying the whole workflow
+
+**Useful State Fields:**
+- `graph_checkpoint_id`
+- `graph_next_nodes[]`
+- `pending_interrupts[]`
+- `last_checkpoint_at`
+
+### SSE Runtime Progress
+
+**Backend Emitters:** `src/api/main.py`, `src/agent/streaming.py`, `src/agent/llm.py`
+
+**Current Events:**
+- `project_state`
+- `stage_progress`
+- `graph_node_finished`
+- `llm_start`
+- `llm_complete`
+- `checkpoint_saved`
+- `interrupt`
+- `graph_error`
+
 ---
 
 ## 🚀 Setup & Running
@@ -312,7 +357,7 @@ cp .env.example .env
 # Edit .env with your settings
 
 # Run backend
-PYTHONPATH=/path/to/project/src uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+PYTHONPATH=/path/to/project/src uv run uvicorn src.api.main:app --host "${API_HOST:-127.0.0.1}" --port "${API_PORT:-8000}" --reload
 ```
 
 ### Frontend
@@ -348,6 +393,14 @@ GEMINI_API_KEY=...
 
 # Project storage backend (memory | mongo)
 PROJECT_STORAGE_BACKEND=memory
+
+# Local app networking
+API_HOST=127.0.0.1
+API_PORT=8000
+VITE_PORT=5173
+VITE_API_URL=http://127.0.0.1:8000
+# Optional comma-separated override
+# CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 
 # Mongo (required only for PROJECT_STORAGE_BACKEND=mongo)
 MONGODB_URI=mongodb://localhost:27017
@@ -426,7 +479,8 @@ Two transcripts are provided:
 2. **Long Transcripts**: >25 min may need topic-based preprocessing (implemented but not battle-tested)
 3. **Jira Rate Limits**: Free accounts have strict limits, backoff implemented but may be slow
 4. **Persistence Backend Default**: Default `memory` backend loses state on backend restart; use `mongo` backend for durable storage
-5. **Concurrent Projects**: No locking, possible race conditions if multiple users edit same project
+5. **Stage 5 Setup Split**: Jira config, connection testing, and preview retrieval are still API-facing helpers, but batch creation now runs through interrupt-driven graph nodes with checkpoints between epics, issues, and sprints
+6. **Concurrent Projects**: No locking, possible race conditions if multiple users edit same project
 
 ---
 
@@ -434,6 +488,7 @@ Two transcripts are provided:
 
 ### Phase 2 (Post-Assessment)
 - Persistence hardening (indexes, retention, backup/restore docs)
+- Token-level provider streaming where supported
 - User authentication
 - Project history/audit trail
 - Export to PDF (SoW)

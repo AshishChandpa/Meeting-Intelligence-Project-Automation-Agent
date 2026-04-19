@@ -12,7 +12,7 @@ import type {
   ProjectListItem,
 } from '@/types'
 
-export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
+export const API_BASE_URL = import.meta.env.VITE_API_URL || ''
 
 const api = axios.create({
   baseURL: API_BASE_URL,

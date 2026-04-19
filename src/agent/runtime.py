@@ -28,7 +28,16 @@ NODE_PROGRESS = {
     "generate_sprint_plan": 82,
     "review_sprint": 86,
     "adjust_sprint_plan": 88,
-    "review_jira": 95,
+    "preview_jira_epics": 91,
+    "review_jira_epics": 92,
+    "create_jira_epics": 93,
+    "preview_jira_issues": 94,
+    "review_jira_issues": 95,
+    "create_jira_issues": 96,
+    "preview_jira_sprints": 97,
+    "review_jira_sprints": 98,
+    "create_jira_sprints": 99,
+    "stage5_done": 100,
     "sync_to_jira": 100,
 }
 

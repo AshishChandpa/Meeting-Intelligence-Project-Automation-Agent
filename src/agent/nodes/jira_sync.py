@@ -10,6 +10,7 @@ import logging
 from typing import Literal
 
 from langchain_core.messages import AIMessage
+from langgraph.types import Command
 
 from agent.jira import JiraClient
 from agent.state import JiraConfig, JiraResult, PipelineState
@@ -17,6 +18,69 @@ from agent.state import JiraConfig, JiraResult, PipelineState
 logger = logging.getLogger(__name__)
 
 JiraBatch = Literal["epics", "issues", "sprints"]
+
+
+def _batch_state(results: list[dict]) -> Literal["done", "failed"]:
+    return "failed" if any(result.get("status") == "failed" for result in results) else "done"
+
+
+def prepare_jira_batch_preview(state: PipelineState, batch: JiraBatch) -> dict:
+    """Prepare Stage 5 preview payload and indicate the next Jira batch awaiting confirmation."""
+    preview = build_jira_preview(state)
+    batch_labels = {
+        "epics": "Epics",
+        "issues": "Issues",
+        "sprints": "Sprints",
+    }
+    counts = {
+        "epics": len(preview["epics"]),
+        "issues": len(preview["issues"]),
+        "sprints": len(preview["sprints"]),
+    }
+    return {
+        "current_stage": "jira",
+        "jira_preview": preview,
+        "jira_pending_batch": batch,
+        "messages": [
+            AIMessage(
+                content=(
+                    f"Stage 5 ready: review {batch_labels[batch]} preview and confirm batch creation. "
+                    f"Counts → epics: {counts['epics']}, issues: {counts['issues']}, sprints: {counts['sprints']}."
+                )
+            )
+        ],
+    }
+
+
+def create_jira_batch(state: PipelineState, batch: JiraBatch) -> dict:
+    """Create a single Jira batch and retain batch-local metadata for API responses."""
+    result = sync_to_jira_batch(state, batch)
+    batch_status = result.get("jira_batch_status", {}).get(batch, state.get("jira_batch_status", {}).get(batch, "failed"))
+    return {
+        **result,
+        "jira_last_batch": batch,
+        "jira_last_batch_results": result.get("jira_results", []),
+        "jira_pending_batch": "",
+        "current_stage": "done" if batch == "sprints" and batch_status == "done" else "jira",
+    }
+
+
+def create_epics_batch(state: PipelineState) -> Command[Literal["preview_jira_issues", "review_jira_epics"]]:
+    result = create_jira_batch(state, "epics")
+    goto = "preview_jira_issues" if result.get("jira_batch_status", {}).get("epics") == "done" else "review_jira_epics"
+    return Command(goto=goto, update=result)
+
+
+def create_issues_batch(state: PipelineState) -> Command[Literal["preview_jira_sprints", "review_jira_issues"]]:
+    result = create_jira_batch(state, "issues")
+    goto = "preview_jira_sprints" if result.get("jira_batch_status", {}).get("issues") == "done" else "review_jira_issues"
+    return Command(goto=goto, update=result)
+
+
+def create_sprints_batch(state: PipelineState) -> Command[Literal["stage5_done", "review_jira_sprints"]]:
+    result = create_jira_batch(state, "sprints")
+    goto = "stage5_done" if result.get("jira_batch_status", {}).get("sprints") == "done" else "review_jira_sprints"
+    return Command(goto=goto, update=result)
 
 
 def build_jira_preview(state: PipelineState) -> dict:
@@ -108,11 +172,12 @@ def sync_to_jira_batch(state: PipelineState, batch: JiraBatch) -> dict:
                     ).model_dump()
                 )
 
+        batch_status = _batch_state(results)
         return {
             "jira_results": results,
             "jira_epic_key_by_module": epic_key_by_module,
-            "jira_batch_status": {**state.get("jira_batch_status", {}), "epics": "done"},
-            "messages": [AIMessage(content=f"Epics batch complete: {len(results)} attempted")],
+            "jira_batch_status": {**state.get("jira_batch_status", {}), "epics": batch_status},
+            "messages": [AIMessage(content=f"Epics batch {batch_status}: {len(results)} attempted")],
         }
 
     if batch == "issues":
@@ -152,11 +217,12 @@ def sync_to_jira_batch(state: PipelineState, batch: JiraBatch) -> dict:
                     ).model_dump()
                 )
 
+        batch_status = _batch_state(results)
         return {
             "jira_results": results,
             "jira_issue_id_by_task": jira_id_by_task,
-            "jira_batch_status": {**state.get("jira_batch_status", {}), "issues": "done"},
-            "messages": [AIMessage(content=f"Issues batch complete: {len(results)} attempted")],
+            "jira_batch_status": {**state.get("jira_batch_status", {}), "issues": batch_status},
+            "messages": [AIMessage(content=f"Issues batch {batch_status}: {len(results)} attempted")],
         }
 
     board_id = state.get("jira_board_id")
@@ -216,11 +282,12 @@ def sync_to_jira_batch(state: PipelineState, batch: JiraBatch) -> dict:
                 ).model_dump()
             )
 
+    batch_status = _batch_state(results)
     return {
         "jira_results": results,
         "jira_board_id": board_id,
-        "jira_batch_status": {**state.get("jira_batch_status", {}), "sprints": "done"},
-        "messages": [AIMessage(content=f"Sprints batch complete: {len(results)} attempted")],
+        "jira_batch_status": {**state.get("jira_batch_status", {}), "sprints": batch_status},
+        "messages": [AIMessage(content=f"Sprints batch {batch_status}: {len(results)} attempted")],
     }
 
 
