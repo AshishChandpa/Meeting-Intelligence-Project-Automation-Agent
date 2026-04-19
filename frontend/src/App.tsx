@@ -11,7 +11,7 @@ import { JiraStage } from './components/stages/JiraStage'
 import { Loader2, AlertCircle } from 'lucide-react'
 
 function App() {
-  const { currentProject, isLoading, error, setError } = useProjectStore()
+  const { currentProject, isLoading, error, latestStreamEvent, setError } = useProjectStore()
   useProjectStream(currentProject?.id ?? null)
 
   useEffect(() => {
@@ -90,6 +90,32 @@ function App() {
             >
               Dismiss
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Runtime Progress Banner */}
+      {currentProject && latestStreamEvent && latestStreamEvent.project_id === currentProject.id && (
+        <div className="border-b bg-primary/5 px-4 py-3">
+          <div className="container mx-auto space-y-2 text-sm">
+            <div className="flex flex-wrap items-center gap-3 text-muted-foreground">
+              <span className="font-medium text-foreground">Runtime</span>
+              {typeof latestStreamEvent.progress === 'number' && (
+                <span>{latestStreamEvent.progress}%</span>
+              )}
+              {latestStreamEvent.node && <span>Node: {latestStreamEvent.node}</span>}
+              {currentProject.graph_checkpoint_id && (
+                <span className="font-mono text-xs">Checkpoint: {currentProject.graph_checkpoint_id.slice(0, 8)}</span>
+              )}
+            </div>
+            {latestStreamEvent.message && (
+              <div className="text-foreground">{latestStreamEvent.message}</div>
+            )}
+            {currentProject.pending_interrupts && currentProject.pending_interrupts.length > 0 && (
+              <div className="text-xs text-muted-foreground">
+                Awaiting review: {currentProject.pending_interrupts[0].message || currentProject.current_stage}
+              </div>
+            )}
           </div>
         </div>
       )}

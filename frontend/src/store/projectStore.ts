@@ -1,11 +1,17 @@
 import { create } from 'zustand'
-import { ProjectListItem, ProjectState } from '@/types'
+import { ProjectListItem, ProjectState, StreamEventPayload } from '@/types'
 
 interface ProjectStore {
   // Current project
   currentProject: ProjectState | null
   setCurrentProject: (project: ProjectState | null) => void
   syncCurrentProject: (project: ProjectState) => void
+
+  // Runtime stream state
+  latestStreamEvent: StreamEventPayload | null
+  streamEvents: StreamEventPayload[]
+  setLatestStreamEvent: (event: StreamEventPayload | null) => void
+  pushStreamEvent: (event: StreamEventPayload) => void
 
   // All projects list
   projects: ProjectListItem[]
@@ -25,6 +31,14 @@ export const useProjectStore = create<ProjectStore>((set) => ({
   currentProject: null,
   setCurrentProject: (project) => set({ currentProject: project, error: null }),
   syncCurrentProject: (project) => set({ currentProject: project }),
+  latestStreamEvent: null,
+  streamEvents: [],
+  setLatestStreamEvent: (event) => set({ latestStreamEvent: event }),
+  pushStreamEvent: (event) =>
+    set((state) => ({
+      latestStreamEvent: event,
+      streamEvents: [...state.streamEvents.slice(-24), event],
+    })),
 
   // All projects list
   projects: [],

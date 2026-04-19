@@ -13,6 +13,7 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from agent.config import settings
+from agent.streaming import emit_stream_event
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,26 @@ def complete_structured(prompt_messages: list[dict], schema: type[T]) -> T:
         settings.llm_provider,
         schema.__name__,
     )
-    return structured.invoke(lc_messages)
+    emit_stream_event(
+        "llm_start",
+        {
+            "provider": settings.llm_provider,
+            "mode": "structured",
+            "schema": schema.__name__,
+            "message": f"Running structured extraction for {schema.__name__}...",
+        },
+    )
+    response = structured.invoke(lc_messages)
+    emit_stream_event(
+        "llm_complete",
+        {
+            "provider": settings.llm_provider,
+            "mode": "structured",
+            "schema": schema.__name__,
+            "message": f"Structured extraction complete for {schema.__name__}.",
+        },
+    )
+    return response
 
 
 def complete_text(prompt_messages: list[dict], temperature: float | None = None) -> str:
@@ -106,5 +126,25 @@ def complete_text(prompt_messages: list[dict], temperature: float | None = None)
 
     temp_str = f" (temp={temperature})" if temperature is not None else ""
     logger.info("Calling %s for text completion%s", settings.llm_provider, temp_str)
+    emit_stream_event(
+        "llm_start",
+        {
+            "provider": settings.llm_provider,
+            "mode": "text",
+            "message": "Generating text output...",
+            "temperature": temperature,
+        },
+    )
     response = model.invoke(lc_messages)
-    return response.content
+    content = response.content
+    emit_stream_event(
+        "llm_complete",
+        {
+            "provider": settings.llm_provider,
+            "mode": "text",
+            "message": "Text generation complete.",
+            "preview": str(content)[:180],
+            "temperature": temperature,
+        },
+    )
+    return content

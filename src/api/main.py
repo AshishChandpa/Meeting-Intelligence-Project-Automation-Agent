@@ -22,12 +22,11 @@ from pydantic import BaseModel
 
 from agent.config import settings
 from agent.storage.factory import create_project_repository
-from agent.nodes.parse import apply_corrections, parse_transcript
-from agent.nodes.clarify import answer_human_question, generate_questions, process_answer
-from agent.nodes.sow import draft_sow, revise_sow, sow_missing_sections
-from agent.nodes.sprint import adjust_sprint_plan, generate_sprint_plan, move_task_between_sprints
+from agent.nodes.clarify import answer_human_question
+from agent.nodes.sow import sow_missing_sections
+from agent.nodes.sprint import move_task_between_sprints
 from agent.nodes.jira_sync import build_jira_preview, sync_to_jira, sync_to_jira_batch
-from agent.state import Extraction
+from agent.runtime import delete_graph_thread, run_graph, sync_project_with_graph, update_graph_state
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +145,10 @@ def project_to_response(project: dict[str, Any]) -> dict[str, Any]:
         "sprint_warnings": state.get("sprint_warnings", []),
         "jira_results": state.get("jira_results", []),
         "jira_batch_status": _jira_batch_status(state),
+        "graph_checkpoint_id": state.get("graph_checkpoint_id", ""),
+        "graph_next_nodes": state.get("graph_next_nodes", []),
+        "pending_interrupts": state.get("pending_interrupts", []),
+        "last_checkpoint_at": state.get("last_checkpoint_at"),
         "stage1_approved": state.get("stage1_approved", False),
         "stage2_approved": state.get("stage2_approved", False),
         "stage3_approved": state.get("stage3_approved", False),
@@ -180,6 +183,60 @@ def update_project_state(project_id: str, updates: dict[str, Any]) -> None:
         return
     project["state"].update(updates)
     project_repo.upsert(project)
+
+
+def _schedule_project_event(
+    loop: asyncio.AbstractEventLoop,
+    project_id: str,
+    event: str,
+    payload: dict[str, Any],
+) -> None:
+    enriched = {**payload, "timestamp": payload.get("timestamp", time.time())}
+    loop.call_soon_threadsafe(
+        lambda: asyncio.create_task(publish_project_event(project_id, event, enriched))
+    )
+
+
+async def _run_graph_for_project(
+    project: dict[str, Any],
+    *,
+    initial_state: dict[str, Any] | None = None,
+    resume_value: Any | None = None,
+) -> dict[str, Any]:
+    project_id = project["id"]
+    loop = asyncio.get_running_loop()
+
+    def callback(event: str, payload: dict[str, Any]) -> None:
+        _schedule_project_event(loop, project_id, event, payload)
+
+    try:
+        await asyncio.to_thread(
+            run_graph,
+            project_id,
+            initial_state=initial_state,
+            resume_value=resume_value,
+            callback=callback,
+        )
+        sync_project_with_graph(project)
+        project_repo.upsert(project)
+        return project
+    except Exception:
+        _schedule_project_event(
+            loop,
+            project_id,
+            "graph_error",
+            {"message": "Workflow execution failed."},
+        )
+        raise
+
+
+def _sync_manual_graph_state(project_id: str, values: dict[str, Any], *, as_node: str | None = None) -> None:
+    try:
+        runtime_meta = update_graph_state(project_id, values, as_node=as_node)
+    except Exception:
+        logger.debug("Graph state sync skipped for %s", project_id, exc_info=True)
+        return
+    update_project_state(project_id, runtime_meta)
 
 
 def _jira_batch_status(state: dict[str, Any]) -> dict[str, str]:
@@ -241,13 +298,8 @@ async def create_project(request: CreateProjectRequest):
     project_repo.upsert(project)
     await publish_project_event(project_id, "stage_started", {"stage": "parse"})
 
-    # Run Stage 1: Parse transcript
     try:
-        parse_state = project["state"].copy()
-
-        # Parse transcript
-        result = parse_transcript(parse_state)
-        project["state"].update(result)
+        await _run_graph_for_project(project, initial_state=project["state"].copy())
         await publish_project_event(project_id, "stage_completed", {"stage": "parse"})
         await publish_project_state(project_id)
 
@@ -319,6 +371,7 @@ async def delete_project(project_id: str):
     """Delete a project."""
     if not project_repo.delete(project_id):
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+    delete_graph_thread(project_id)
     project_event_subscribers.pop(project_id, None)
     return {"message": f"Project {project_id} deleted"}
 
@@ -332,15 +385,7 @@ async def approve_stage1(project_id: str):
 
     try:
         await publish_project_event(project_id, "stage_started", {"stage": "clarify"})
-        # Run Stage 2: Generate questions
-        state = project["state"].copy()
-        state["stage1_approved"] = True
-        state["current_stage"] = "clarify"
-
-        from agent.nodes.clarify import generate_questions
-        result = generate_questions(state)
-
-        project["state"].update(result)
+        await _run_graph_for_project(project, resume_value="approve")
         await publish_project_event(project_id, "stage_completed", {"stage": "clarify"})
         await publish_project_state(project_id)
         return {"message": "Stage 1 approved", "next_stage": "clarify"}
@@ -356,15 +401,9 @@ async def submit_stage1_feedback(project_id: str, request: FeedbackRequest):
     project = get_project(project_id)
 
     try:
-        # Add feedback to messages and apply correction
-        state = project["state"].copy()
-        from langchain_core.messages import HumanMessage
-        state["messages"].append(HumanMessage(content=request.feedback))
-
-        result = apply_corrections(state)
-        project["state"].update(result)
+        await _run_graph_for_project(project, resume_value=request.feedback)
         await publish_project_state(project_id)
-        return {"message": "Correction applied", "extraction": result.get("extraction")}
+        return {"message": "Correction applied", "extraction": project["state"].get("extraction")}
 
     except Exception as e:
         logger.exception("Failed to apply correction")
@@ -379,17 +418,10 @@ async def answer_question(project_id: str, request: AnswerRequest):
     project = get_project(project_id)
 
     try:
-        state = project["state"].copy()
-        from langchain_core.messages import HumanMessage
-
-        # Format answer as "q1: <answer>"
         answer_input = f"{request.question_id}: {request.answer}"
-        state["messages"].append(HumanMessage(content=answer_input))
-
-        result = process_answer(state)
-        project["state"].update(result)
+        await _run_graph_for_project(project, resume_value=answer_input)
         await publish_project_state(project_id)
-        return {"message": "Answer processed", "questions": result.get("questions", [])}
+        return {"message": "Answer processed", "questions": project["state"].get("questions", [])}
 
     except Exception as e:
         logger.exception("Failed to process answer")
@@ -402,17 +434,10 @@ async def skip_question(project_id: str, request: SkipRequest):
     project = get_project(project_id)
 
     try:
-        state = project["state"].copy()
-        from langchain_core.messages import HumanMessage
-
-        # Format skip as "q1: skip <reason>"
         skip_input = f"{request.question_id}: skip {request.reason}"
-        state["messages"].append(HumanMessage(content=skip_input))
-
-        result = process_answer(state)
-        project["state"].update(result)
+        await _run_graph_for_project(project, resume_value=skip_input)
         await publish_project_state(project_id)
-        return {"message": "Question skipped", "questions": result.get("questions", [])}
+        return {"message": "Question skipped", "questions": project["state"].get("questions", [])}
 
     except Exception as e:
         logger.exception("Failed to skip question")
@@ -428,6 +453,7 @@ async def ask_question(project_id: str, request: AskRequest):
         state = project["state"].copy()
         result = answer_human_question(state, request.question)
         project["state"].update(result)
+        _sync_manual_graph_state(project_id, {"questions": project["state"].get("questions", [])})
         await publish_project_state(project_id)
         answer_text = ""
         if result.get("messages"):
@@ -450,13 +476,7 @@ async def done_clarification(project_id: str):
 
     try:
         await publish_project_event(project_id, "stage_started", {"stage": "sow"})
-        # Run Stage 3: Draft SoW
-        state = project["state"].copy()
-        state["stage2_approved"] = True
-        state["current_stage"] = "sow"
-
-        result = draft_sow(state)
-        project["state"].update(result)
+        await _run_graph_for_project(project, resume_value="done")
         await publish_project_event(project_id, "stage_completed", {"stage": "sow"})
         await publish_project_state(project_id)
         return {"message": "Clarification complete", "next_stage": "sow"}
@@ -474,14 +494,13 @@ async def submit_sow_feedback(project_id: str, request: FeedbackRequest):
     project = get_project(project_id)
 
     try:
-        state = project["state"].copy()
-        from langchain_core.messages import HumanMessage
-
-        state["messages"].append(HumanMessage(content=request.feedback))
-        result = revise_sow(state)
-        project["state"].update(result)
+        await _run_graph_for_project(project, resume_value=request.feedback)
         await publish_project_state(project_id)
-        return {"message": "SoW revised", "sow": result.get("sow"), "version": result.get("sow_version")}
+        return {
+            "message": "SoW revised",
+            "sow": project["state"].get("sow"),
+            "version": project["state"].get("sow_version"),
+        }
 
     except Exception as e:
         logger.exception("Failed to revise SoW")
@@ -509,13 +528,7 @@ async def approve_sow(project_id: str):
 
     try:
         await publish_project_event(project_id, "stage_started", {"stage": "sprint"})
-        # Run Stage 4: Generate sprint plan
-        state = project["state"].copy()
-        state["stage3_approved"] = True
-        state["current_stage"] = "sprint"
-
-        result = generate_sprint_plan(state)
-        project["state"].update(result)
+        await _run_graph_for_project(project, resume_value="approve")
         await publish_project_event(project_id, "stage_completed", {"stage": "sprint"})
         await publish_project_state(project_id)
         return {"message": "SoW approved", "next_stage": "sprint"}
@@ -533,14 +546,9 @@ async def submit_sprint_feedback(project_id: str, request: FeedbackRequest):
     project = get_project(project_id)
 
     try:
-        state = project["state"].copy()
-        from langchain_core.messages import HumanMessage
-
-        state["messages"].append(HumanMessage(content=request.feedback))
-        result = adjust_sprint_plan(state)
-        project["state"].update(result)
+        await _run_graph_for_project(project, resume_value=request.feedback)
         await publish_project_state(project_id)
-        return {"message": "Sprint plan adjusted", "sprints": result.get("sprints", [])}
+        return {"message": "Sprint plan adjusted", "sprints": project["state"].get("sprints", [])}
 
     except Exception as e:
         logger.exception("Failed to adjust sprint plan")
@@ -553,10 +561,7 @@ async def approve_sprint_plan(project_id: str):
     project = get_project(project_id)
 
     try:
-        state = project["state"].copy()
-        state["stage4_approved"] = True
-        state["current_stage"] = "jira"
-        project["state"].update(state)
+        await _run_graph_for_project(project, resume_value="approve")
         await publish_project_state(project_id)
         return {"message": "Sprint plan approved", "next_stage": "jira"}
 
@@ -580,6 +585,13 @@ async def move_task(project_id: str, request: MoveTaskRequest):
         )
         state["sprints"] = updated_sprints
         state["sprint_warnings"] = warnings
+        _sync_manual_graph_state(
+            project_id,
+            {
+                "sprints": updated_sprints,
+                "sprint_warnings": warnings,
+            },
+        )
         await publish_project_state(project_id)
         return {"message": "Task moved", "sprints": updated_sprints, "warnings": warnings}
 
@@ -609,6 +621,17 @@ async def set_jira_config(project_id: str, request: JiraConfigRequest):
     project["state"]["jira_epic_key_by_module"] = {}
     project["state"]["jira_issue_id_by_task"] = {}
     project["state"].pop("jira_board_id", None)
+    _sync_manual_graph_state(
+        project_id,
+        {
+            "jira_config": project["jira_config"],
+            "jira_results": [],
+            "jira_batch_status": {},
+            "jira_epic_key_by_module": {},
+            "jira_issue_id_by_task": {},
+            "jira_board_id": None,
+        },
+    )
 
     await publish_project_event(project_id, "jira_config_saved", {"project_id": project_id})
     await publish_project_state(project_id)
@@ -678,10 +701,12 @@ async def sync_to_jira_batch_endpoint(project_id: str, batch: Literal["epics", "
         state["jira_config"] = jira_config
         result = sync_to_jira_batch(state, batch)
         project["state"].update(result)
+        _sync_manual_graph_state(project_id, result)
 
         if batch == "sprints" and project["state"].get("jira_batch_status", {}).get("sprints") == "done":
             project["state"]["stage5_done"] = True
             project["state"]["current_stage"] = "done"
+            _sync_manual_graph_state(project_id, {"stage5_done": True, "current_stage": "done"})
             await publish_project_event(project_id, "stage_completed", {"stage": "done"})
 
         await publish_project_state(project_id)
@@ -715,6 +740,7 @@ async def sync_to_jira_endpoint(project_id: str):
         result = sync_to_jira(state)
         project["state"].update(result)
         project["state"]["stage5_done"] = True
+        _sync_manual_graph_state(project_id, result)
         await publish_project_event(project_id, "stage_completed", {"stage": "done"})
         await publish_project_state(project_id)
         return {"message": "Jira sync complete", "results": result.get("jira_results", [])}

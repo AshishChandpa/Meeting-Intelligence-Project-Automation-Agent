@@ -10,6 +10,14 @@ export type QuestionStatus = "open" | "answered" | "skipped"
 export type StoryPoints = 1 | 2 | 3 | 5 | 8 | 13
 export type JiraBatch = "epics" | "issues" | "sprints"
 export type JiraBatchState = "pending" | "done" | "failed"
+export type StreamEventName =
+  | "stage_progress"
+  | "graph_node_finished"
+  | "llm_start"
+  | "llm_complete"
+  | "checkpoint_saved"
+  | "interrupt"
+  | "graph_error"
 
 // ── Stage 1: Extraction types ────────────────────────────────────────────────
 
@@ -138,6 +146,33 @@ export interface JiraBatchSyncResponse {
   batch_status: Partial<Record<JiraBatch, JiraBatchState>>
 }
 
+export interface PendingInterrupt {
+  interrupt_id?: string
+  stage?: string
+  message?: string
+  [key: string]: unknown
+}
+
+export interface StreamEventPayload {
+  event: StreamEventName
+  message?: string
+  progress?: number
+  stage?: Stage | string
+  node?: string
+  project_id?: string
+  provider?: string
+  mode?: string
+  schema?: string
+  preview?: string
+  graph_checkpoint_id?: string
+  graph_next_nodes?: string[]
+  pending_interrupts?: PendingInterrupt[]
+  interrupts?: PendingInterrupt[]
+  last_checkpoint_at?: number
+  temperature?: number | null
+  timestamp?: number
+}
+
 // ── Full Project State ──────────────────────────────────────────────────────
 
 export interface ProjectState {
@@ -154,6 +189,10 @@ export interface ProjectState {
   sprint_warnings?: string[]
   jira_results?: JiraResult[]
   jira_batch_status?: Partial<Record<JiraBatch, JiraBatchState>>
+  graph_checkpoint_id?: string
+  graph_next_nodes?: string[]
+  pending_interrupts?: PendingInterrupt[]
+  last_checkpoint_at?: number | null
   stage1_approved?: boolean
   stage2_approved?: boolean
   stage3_approved?: boolean

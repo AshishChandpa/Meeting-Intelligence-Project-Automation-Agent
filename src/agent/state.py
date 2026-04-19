@@ -137,6 +137,10 @@ class PipelineState(MessagesState):
 
     # ── Stage tracking ──
     current_stage: str = "parse"   # parse | clarify | sow | sprint | jira | done
+    graph_checkpoint_id: str = ""
+    graph_next_nodes: list[str] = Field(default_factory=list)
+    pending_interrupts: list[dict] = Field(default_factory=list)
+    last_checkpoint_at: float | None = None
 
     # ── Stage 1: Transcript Parsing ──
     raw_transcript: str = ""

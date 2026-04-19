@@ -184,7 +184,7 @@ def review_jira(state: PipelineState) -> Command[Literal["sync_to_jira", "__end_
 
 # ── Graph assembly ─────────────────────────────────────────────────────
 
-def build_graph() -> StateGraph:
+def build_graph(checkpointer=None):
     builder = StateGraph(PipelineState)
 
     # Stage 1
@@ -243,6 +243,8 @@ def build_graph() -> StateGraph:
     # Stage 5 flow
     builder.add_edge("sync_to_jira", END)
 
+    if checkpointer is not None:
+        return builder.compile(checkpointer=checkpointer)
     return builder.compile()
 
 
