@@ -13,7 +13,6 @@ import re
 import logging
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +37,22 @@ class TopicSection:
     segments: List[TranscriptSegment]
     summary: str = ""
     key_points: List[str] = field(default_factory=list)
+
+
+@dataclass
+class TranscriptChunk:
+    """A chunk of transcript prepared for chunk/merge extraction."""
+
+    chunk_id: int
+    start_segment_id: int
+    end_segment_id: int
+    start_time: str
+    end_time: str
+    text: str
+    segment_count: int
+    approx_chars: int
+    speakers: List[str] = field(default_factory=list)
+    topics: List[str] = field(default_factory=list)
 
 
 class TranscriptPreprocessor:
@@ -80,7 +95,7 @@ class TranscriptPreprocessor:
 
             if timestamp_match:
                 # Save previous segment if exists
-                if current_speaker and current_content:
+                if current_speaker is not None and current_content:
                     content = ' '.join(current_content).strip()
                     if content:
                         segments.append(TranscriptSegment(
@@ -103,7 +118,7 @@ class TranscriptPreprocessor:
                     current_content.append(line)
 
         # Don't forget the last segment
-        if current_speaker and current_content:
+        if current_speaker is not None and current_content:
             content = ' '.join(current_content).strip()
             if content:
                 segments.append(TranscriptSegment(
@@ -195,8 +210,8 @@ class TranscriptPreprocessor:
         segments: List[TranscriptSegment],
         chunk_size: int = 10,
         overlap: int = 2
-    ) -> List[str]:
-        """Create overlapping text chunks for LLM processing.
+    ) -> List[dict]:
+        """Create overlapping chunk descriptors for LLM processing.
 
         Args:
             segments: List of transcript segments
@@ -204,22 +219,102 @@ class TranscriptPreprocessor:
             overlap: Number of overlapping segments between chunks
 
         Returns:
-            List of formatted text chunks
+            List of chunk descriptors with text + metadata
         """
-        chunks = []
+        chunks: List[dict] = []
 
-        for i in range(0, len(segments), chunk_size - overlap):
+        if not segments:
+            return chunks
+
+        step = max(1, chunk_size - overlap)
+
+        for chunk_id, i in enumerate(range(0, len(segments), step), start=1):
             chunk_segments = segments[i:i + chunk_size]
+            if not chunk_segments:
+                continue
 
-            # Format chunk as readable text
-            chunk_text = self._format_segments(chunk_segments)
-            chunks.append(chunk_text)
+            chunk = TranscriptChunk(
+                chunk_id=chunk_id,
+                start_segment_id=chunk_segments[0].segment_id,
+                end_segment_id=chunk_segments[-1].segment_id,
+                start_time=chunk_segments[0].timestamp,
+                end_time=chunk_segments[-1].timestamp,
+                text=self._format_segments(chunk_segments),
+                segment_count=len(chunk_segments),
+                approx_chars=sum(len(seg.content) for seg in chunk_segments),
+                speakers=sorted({seg.speaker for seg in chunk_segments if seg.speaker}),
+                topics=sorted({topic for seg in chunk_segments for topic in seg.topic_keywords}),
+            )
+            chunks.append(
+                {
+                    "chunk_id": chunk.chunk_id,
+                    "start_segment_id": chunk.start_segment_id,
+                    "end_segment_id": chunk.end_segment_id,
+                    "time_range": f"{chunk.start_time} - {chunk.end_time}",
+                    "start_time": chunk.start_time,
+                    "end_time": chunk.end_time,
+                    "segment_count": chunk.segment_count,
+                    "approx_chars": chunk.approx_chars,
+                    "speakers": chunk.speakers,
+                    "topics": chunk.topics,
+                    "text": chunk.text,
+                }
+            )
 
             if i + chunk_size >= len(segments):
                 break
 
         logger.info(f"Created {len(chunks)} chunks (size={chunk_size}, overlap={overlap})")
         return chunks
+
+    def choose_strategy(
+        self,
+        raw_transcript: str,
+        segments: Optional[List[TranscriptSegment]] = None,
+        *,
+        topic_char_threshold: int = 14000,
+        topic_segment_threshold: int = 45,
+        chunk_char_threshold: int = 24000,
+        chunk_segment_threshold: int = 70,
+        chunk_word_threshold: int = 4200,
+    ) -> Dict:
+        """Choose extraction strategy based on transcript size/shape."""
+        segments = segments if segments is not None else self.parse_transcript(raw_transcript)
+        stats = {
+            'char_count': len(raw_transcript),
+            'word_count': len(raw_transcript.split()),
+            'segment_count': len(segments),
+        }
+
+        if (
+            stats['char_count'] >= chunk_char_threshold
+            or stats['segment_count'] >= chunk_segment_threshold
+            or stats['word_count'] >= chunk_word_threshold
+        ):
+            strategy = 'chunked'
+            reason = 'very long transcript exceeded chunking threshold'
+        elif (
+            stats['char_count'] >= topic_char_threshold
+            or stats['segment_count'] >= topic_segment_threshold
+        ):
+            strategy = 'topic'
+            reason = 'transcript exceeded topic-context threshold'
+        else:
+            strategy = 'full'
+            reason = 'transcript small enough for direct extraction'
+
+        return {
+            'strategy': strategy,
+            'reason': reason,
+            **stats,
+            'thresholds': {
+                'topic_char_threshold': topic_char_threshold,
+                'topic_segment_threshold': topic_segment_threshold,
+                'chunk_char_threshold': chunk_char_threshold,
+                'chunk_segment_threshold': chunk_segment_threshold,
+                'chunk_word_threshold': chunk_word_threshold,
+            },
+        }
 
     def _format_segments(self, segments: List[TranscriptSegment]) -> str:
         """Format segments as readable text with timestamps."""
@@ -322,7 +417,10 @@ class TranscriptPreprocessor:
     def create_extraction_context(
         self,
         raw_transcript: str,
-        strategy: str = 'topic'
+        strategy: str = 'topic',
+        *,
+        chunk_size: int = 10,
+        overlap: int = 2,
     ) -> Dict:
         """Create optimized context for requirement extraction.
 
@@ -352,11 +450,23 @@ class TranscriptPreprocessor:
             }
 
         elif strategy == 'chunked':
-            chunks = self.create_chunked_prompts(segments)
+            chunks = self.create_chunked_prompts(segments, chunk_size=chunk_size, overlap=overlap)
             return {
                 'strategy': 'chunked',
-                'chunks': chunks,
+                'chunks': [
+                    {
+                        'chunk_id': chunk['chunk_id'],
+                        'time_range': chunk['time_range'],
+                        'segment_count': chunk['segment_count'],
+                        'approx_chars': chunk['approx_chars'],
+                        'topics': chunk['topics'],
+                        'speakers': chunk['speakers'],
+                    }
+                    for chunk in chunks
+                ],
                 'total_chunks': len(chunks),
+                'chunk_size': chunk_size,
+                'chunk_overlap': overlap,
                 'speaker_summary': self.extract_speaker_summary(segments),
                 'client_requirements': self.identify_client_requirements(segments)
             }

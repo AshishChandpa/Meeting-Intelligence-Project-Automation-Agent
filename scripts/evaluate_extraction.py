@@ -28,9 +28,13 @@ def summarize(path: Path) -> dict:
     state = {"raw_transcript": path.read_text(encoding="utf-8"), "messages": []}
     result = parse_transcript(state)
     extraction = result["extraction"]
+    context = result.get("preprocessing_context", {})
 
     return {
         "file": path.name,
+        "strategy": context.get("strategy", "unknown"),
+        "fallback_strategy": context.get("fallback_strategy", ""),
+        "total_chunks": context.get("total_chunks", 0),
         "project_name": extraction.get("project_name", ""),
         "client_name": extraction.get("client_name", ""),
         "vendor_name": extraction.get("vendor_name", ""),

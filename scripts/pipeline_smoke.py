@@ -30,6 +30,7 @@ def run_for_file(name: str) -> dict:
 
     state.update(parse_transcript(state))
     ex = state.get("extraction", {})
+    preprocessing = state.get("preprocessing_context", {})
 
     state["stage1_approved"] = True
     state["current_stage"] = "clarify"
@@ -59,6 +60,9 @@ def run_for_file(name: str) -> dict:
     return {
         "file": name,
         "stage1": {
+            "strategy": preprocessing.get("strategy", "unknown"),
+            "fallback_strategy": preprocessing.get("fallback_strategy", ""),
+            "total_chunks": preprocessing.get("total_chunks", 0),
             "modules": len(ex.get("modules", [])),
             "requirements": len(ex.get("requirements", [])),
             "integrations": len(ex.get("integrations", [])),

@@ -77,6 +77,8 @@ Important:
 - Prefer explicit product naming mentioned by participants.
 - Keep requirements unique and implementation-agnostic.
 - Do not stop early after first few items; continue scanning for additional modules/requirements.
+- The transcript may be a focused excerpt or one chunk from a longer discovery call; extract only evidence visible here and let overlaps collapse during merge.
+- If this chunk repeats a previously-mentioned requirement idea, keep the clearest wording instead of generating multiple variants.
 """
 
 CORRECTION_SYSTEM = """\

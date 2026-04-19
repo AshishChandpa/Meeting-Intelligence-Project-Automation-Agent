@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import re
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 
+from agent.config import settings
 from agent.llm import complete_structured, complete_text
 from agent.prompts.extraction_enhanced import (
     CORRECTION_SYSTEM,
@@ -113,8 +115,9 @@ def _bootstrap_requirements_from_context(extraction: dict, context: dict | None)
     requirements = extraction.get("requirements", [])
     existing_count = len(requirements)
 
-    # Only augment when extraction is weak for planning input quality.
-    if existing_count >= 8:
+    # Only augment when extraction is very weak (bootstrap threshold from settings).
+    bootstrap_trigger = settings.extraction_sparse_requirement_threshold
+    if existing_count >= max(bootstrap_trigger, 6):
         return extraction
 
     client_reqs = (context or {}).get("client_requirements", [])
@@ -331,6 +334,19 @@ def _build_context_block(context: dict | None) -> str:
         f"- detected_client_requirement_snippets: {len(client_reqs)}",
     ]
 
+    if context.get("chunk_window"):
+        lines.append(f"- chunk_window: {context['chunk_window']}")
+    if context.get("chunk_time_range"):
+        lines.append(f"- chunk_time_range: {context['chunk_time_range']}")
+    if context.get("chunk_segment_count"):
+        lines.append(f"- chunk_segment_count: {context['chunk_segment_count']}")
+    if context.get("chunk_topics"):
+        lines.append(f"- chunk_topics: {', '.join(context['chunk_topics'][:6])}")
+    if context.get("chunk_speakers"):
+        lines.append(f"- chunk_speakers: {', '.join(context['chunk_speakers'][:6])}")
+    if context.get("total_chunks"):
+        lines.append(f"- total_chunks: {context['total_chunks']}")
+
     for idx, item in enumerate(client_reqs[:10], start=1):
         lines.append(f"  - client_req_{idx}: {item}")
 
@@ -402,6 +418,230 @@ def _build_focused_transcript(segments: list, max_chars: int = 14000) -> str:
     return "\n".join(lines)
 
 
+_CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def _normalize_key(value: str | None) -> str:
+    """Normalize a string for fuzzy comparison: lowercase, collapse whitespace/punctuation, strip common plural forms."""
+    text = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", (value or "").strip().lower())).strip()
+    # Strip simple English plural/verb suffixes from words ≥ 4 chars so
+    # "upload" and "uploads", "document" and "documents" hash to the same key.
+    words = []
+    for word in text.split():
+        if len(word) >= 5 and word.endswith("s"):
+            words.append(word[:-1])
+        elif len(word) >= 6 and word.endswith("ing"):
+            words.append(word[:-3])
+        else:
+            words.append(word)
+    return " ".join(words)
+
+
+def _confidence_rank(value: str | None) -> int:
+    return _CONFIDENCE_RANK.get((value or "").strip().lower(), -1)
+
+
+def _prefer_richer_item(existing: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    existing_score = sum(1 for value in existing.values() if value not in (None, "", [], {}))
+    candidate_score = sum(1 for value in candidate.values() if value not in (None, "", [], {}))
+    if _confidence_rank(candidate.get("confidence")) > _confidence_rank(existing.get("confidence")):
+        return candidate
+    if candidate_score > existing_score:
+        return candidate
+    return existing
+
+
+def _merge_named_records(records: list[dict], key_field: str, *, merge_fields: list[str] | None = None) -> list[dict]:
+    merge_fields = merge_fields or []
+    merged: dict[str, dict[str, Any]] = {}
+
+    for record in records:
+        key = _normalize_key(record.get(key_field, ""))
+        if not key:
+            continue
+        if key not in merged:
+            merged[key] = dict(record)
+            continue
+
+        chosen = _prefer_richer_item(merged[key], record)
+        other = record if chosen is merged[key] else merged[key]
+        merged[key] = dict(chosen)
+        for field in merge_fields:
+            if not merged[key].get(field) and other.get(field):
+                merged[key][field] = other[field]
+
+    return list(merged.values())
+
+
+def _deduplicate_simple_records(records: list[dict], text_field: str, *, similarity_threshold: float = 0.82) -> list[dict]:
+    unique: list[dict] = []
+    for record in records:
+        text = (record.get(text_field) or "").strip()
+        if not text:
+            continue
+        normalized = _normalize_key(text)
+        duplicate_index: int | None = None
+        for index, existing in enumerate(unique):
+            existing_text = existing.get(text_field, "")
+            existing_normalized = _normalize_key(existing_text)
+            if normalized == existing_normalized or _similarity(normalized, existing_normalized) >= similarity_threshold:
+                duplicate_index = index
+                break
+
+        if duplicate_index is None:
+            unique.append(dict(record))
+            continue
+
+        unique[duplicate_index] = _prefer_richer_item(unique[duplicate_index], record)
+
+    return unique
+
+
+def _merge_chunk_extractions(chunk_extractions: list[dict], transcript: str) -> dict:
+    merged: dict[str, Any] = {
+        "project_name": "",
+        "client_name": "",
+        "vendor_name": "",
+        "modules": [],
+        "requirements": [],
+        "integrations": [],
+        "constraints": [],
+        "assumptions": [],
+        "unknowns": [],
+    }
+
+    for extraction in chunk_extractions:
+        if not merged["project_name"] and extraction.get("project_name"):
+            merged["project_name"] = extraction.get("project_name", "")
+        if not merged["client_name"] and extraction.get("client_name"):
+            merged["client_name"] = extraction.get("client_name", "")
+        if not merged["vendor_name"] and extraction.get("vendor_name"):
+            merged["vendor_name"] = extraction.get("vendor_name", "")
+
+        merged["modules"].extend(extraction.get("modules", []))
+        merged["requirements"].extend(extraction.get("requirements", []))
+        merged["integrations"].extend(extraction.get("integrations", []))
+        merged["constraints"].extend(extraction.get("constraints", []))
+        merged["assumptions"].extend(extraction.get("assumptions", []))
+        merged["unknowns"].extend(extraction.get("unknowns", []))
+
+    merged["modules"] = _merge_named_records(
+        merged["modules"],
+        "name",
+        merge_fields=["description", "deadline", "priority", "confidence"],
+    )
+    merged["integrations"] = _merge_named_records(
+        merged["integrations"],
+        "system",
+        merge_fields=["purpose", "confidence"],
+    )
+    merged["constraints"] = _deduplicate_simple_records(merged["constraints"], "description")
+    merged["assumptions"] = _deduplicate_simple_records(merged["assumptions"], "description")
+    merged["unknowns"] = _deduplicate_simple_records(merged["unknowns"], "description")
+    merged = _normalize_core_names(merged, transcript)
+    merged = deduplicate_requirements(merged)
+    return merged
+
+
+def _finalize_extraction(extraction_dict: dict, transcript: str, context: dict | None) -> dict:
+    extraction_dict = _normalize_core_names(extraction_dict, transcript)
+    extraction_dict = _bootstrap_requirements_from_context(extraction_dict, context)
+    extraction_dict = _ensure_modules_from_requirements(extraction_dict)
+    extraction_dict = _bootstrap_integrations_from_transcript(extraction_dict, transcript)
+    extraction_dict = deduplicate_requirements(extraction_dict)
+    extraction_dict["constraints"] = _deduplicate_simple_records(extraction_dict.get("constraints", []), "description")
+    extraction_dict["assumptions"] = _deduplicate_simple_records(extraction_dict.get("assumptions", []), "description")
+    extraction_dict["unknowns"] = _deduplicate_simple_records(extraction_dict.get("unknowns", []), "description")
+    extraction_dict["modules"] = _merge_named_records(
+        extraction_dict.get("modules", []),
+        "name",
+        merge_fields=["description", "deadline", "priority", "confidence"],
+    )
+    extraction_dict["integrations"] = _merge_named_records(
+        extraction_dict.get("integrations", []),
+        "system",
+        merge_fields=["purpose", "confidence"],
+    )
+    return Extraction(**extraction_dict).model_dump()
+
+
+def _build_extraction_messages(transcript_excerpt: str, context_block: str) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": EXTRACTION_SYSTEM},
+        {
+            "role": "user",
+            "content": EXTRACTION_USER.format(
+                transcript=transcript_excerpt,
+                context_block=context_block,
+            ),
+        },
+    ]
+
+
+def _run_structured_extraction(transcript_excerpt: str, context_block: str) -> Extraction:
+    return complete_structured(_build_extraction_messages(transcript_excerpt, context_block), schema=Extraction)
+
+
+def _extraction_is_sparse(extraction_dict: dict, context: dict | None) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    requirement_count = len(extraction_dict.get("requirements", []))
+    module_count = len(extraction_dict.get("modules", []))
+    client_requirement_hints = len((context or {}).get("client_requirements", []))
+
+    if requirement_count == 0 and module_count == 0:
+        reasons.append("no modules or requirements extracted")
+    if client_requirement_hints >= 6 and requirement_count < settings.extraction_sparse_requirement_threshold:
+        reasons.append(
+            f"requirements below threshold ({requirement_count} < {settings.extraction_sparse_requirement_threshold}) despite strong client-signal hints"
+        )
+    if requirement_count >= 3 and module_count < settings.extraction_sparse_module_threshold:
+        reasons.append(
+            f"modules below threshold ({module_count} < {settings.extraction_sparse_module_threshold})"
+        )
+
+    return bool(reasons), reasons
+
+
+def _extract_single_pass(transcript_excerpt: str, context: dict | None) -> Extraction:
+    context_block = _build_context_block(context)
+    return _run_structured_extraction(transcript_excerpt, context_block)
+
+
+def _extract_chunked(transcript: str, chunks: list[dict], base_context: dict | None) -> tuple[dict, list[dict]]:
+    chunk_results: list[dict] = []
+    chunk_metadata: list[dict] = []
+
+    total_chunks = len(chunks)
+    for chunk in chunks:
+        chunk_context = {
+            **(base_context or {}),
+            "strategy": "chunked",
+            "chunk_window": f"{chunk['chunk_id']}/{total_chunks}",
+            "chunk_time_range": chunk["time_range"],
+            "chunk_topics": chunk.get("topics", []),
+            "chunk_speakers": chunk.get("speakers", []),
+            "chunk_segment_count": chunk.get("segment_count", 0),
+            "chunk_total": total_chunks,
+        }
+        validated = _extract_single_pass(chunk["text"], chunk_context)
+        extraction_dict = validated.model_dump()
+        chunk_results.append(extraction_dict)
+        chunk_metadata.append(
+            {
+                "chunk_id": chunk["chunk_id"],
+                "time_range": chunk["time_range"],
+                "segment_count": chunk.get("segment_count", 0),
+                "topics": chunk.get("topics", []),
+                "module_count": len(extraction_dict.get("modules", [])),
+                "requirement_count": len(extraction_dict.get("requirements", [])),
+                "integration_count": len(extraction_dict.get("integrations", [])),
+            }
+        )
+
+    merged = _merge_chunk_extractions(chunk_results, transcript)
+    return merged, chunk_metadata
+
+
 def deduplicate_requirements(extraction: dict) -> dict:
     """Remove duplicate requirements from extraction.
 
@@ -420,31 +660,30 @@ def deduplicate_requirements(extraction: dict) -> dict:
     if not requirements:
         return extraction
 
-    seen_descriptions = set()
     unique_requirements = []
     duplicates_removed = 0
 
     for req in requirements:
-        desc = req.get("description", "").strip().lower()
-
-        # Check for exact match
-        if desc in seen_descriptions:
-            duplicates_removed += 1
+        desc = req.get("description", "").strip()
+        desc_key = _normalize_key(desc)
+        req_module_key = _normalize_key(req.get("module", ""))
+        if not desc_key:
             continue
 
-        # Check for similar descriptions in same module
-        is_duplicate = False
-        req_module = req.get("module", "")
-        for seen_req in unique_requirements:
-            if (seen_req.get("module", "") == req_module and
-                _similarity(desc, seen_req.get("description", "").lower()) > 0.8):
+        duplicate_index: int | None = None
+        for index, seen_req in enumerate(unique_requirements):
+            seen_desc_key = _normalize_key(seen_req.get("description", ""))
+            seen_module_key = _normalize_key(seen_req.get("module", ""))
+            same_module = req_module_key == seen_module_key or not req_module_key or not seen_module_key
+            if desc_key == seen_desc_key or (same_module and _similarity(desc_key, seen_desc_key) >= 0.78):
                 duplicates_removed += 1
-                is_duplicate = True
+                duplicate_index = index
                 break
 
-        if not is_duplicate:
-            seen_descriptions.add(desc)
+        if duplicate_index is None:
             unique_requirements.append(req)
+        else:
+            unique_requirements[duplicate_index] = _prefer_richer_item(unique_requirements[duplicate_index], req)
 
     if duplicates_removed > 0:
         logger.info(f"Removed {duplicates_removed} duplicate requirements. "
@@ -483,61 +722,98 @@ def parse_transcript(state: PipelineState) -> dict:
     preprocessor = TranscriptPreprocessor()
     segments = preprocessor.parse_transcript(transcript)
 
-    focused_transcript = _build_focused_transcript(segments)
-
-    # Choose strategy based on transcript length
-    if len(segments) > 50:  # Long transcript (>25 min approx)
-        logger.info("Using topic-based preprocessing for long transcript")
-        context = preprocessor.create_extraction_context(transcript, strategy='topic')
-        transcript_for_llm = focused_transcript or transcript
-    else:
-        logger.info("Using direct extraction for shorter transcript")
-        context = preprocessor.create_extraction_context(transcript, strategy='full')
-        transcript_for_llm = focused_transcript or transcript
-
-    context_block = _build_context_block(context)
-
-    messages = [
-        {"role": "system", "content": EXTRACTION_SYSTEM},
+    strategy_info = preprocessor.choose_strategy(
+        transcript,
+        segments,
+        topic_char_threshold=settings.extraction_topic_char_threshold,
+        topic_segment_threshold=settings.extraction_topic_segment_threshold,
+        chunk_char_threshold=settings.extraction_chunk_char_threshold,
+        chunk_segment_threshold=settings.extraction_chunk_segment_threshold,
+        chunk_word_threshold=settings.extraction_chunk_word_threshold,
+    )
+    strategy = strategy_info["strategy"]
+    focused_transcript = _build_focused_transcript(
+        segments,
+        max_chars=settings.extraction_focused_max_chars,
+    )
+    base_context = preprocessor.create_extraction_context(
+        transcript,
+        strategy=strategy,
+        chunk_size=settings.extraction_chunk_size,
+        overlap=settings.extraction_chunk_overlap,
+    )
+    base_context.update(
         {
-            "role": "user",
-            "content": EXTRACTION_USER.format(
-                transcript=transcript_for_llm,
-                context_block=context_block,
-            ),
-        },
-    ]
+            "segment_count": len(segments),
+            "char_count": len(transcript),
+            "word_count": len(transcript.split()),
+            "strategy_reason": strategy_info.get("reason", ""),
+            "thresholds": strategy_info.get("thresholds", {}),
+            "fallback_strategy": "",
+            "fallback_reason": "",
+            "chunk_runs": [],
+        }
+    )
 
-    validated: Extraction = complete_structured(messages, schema=Extraction)
+    logger.info(
+        "Using %s extraction strategy (%s). segments=%d chars=%d words=%d",
+        strategy,
+        strategy_info.get("reason", ""),
+        len(segments),
+        len(transcript),
+        len(transcript.split()),
+    )
 
-    # Retry once with full transcript if model returns an empty extraction.
-    if not validated.modules and not validated.requirements:
-        logger.warning("Primary extraction came back empty; retrying with full transcript")
-        retry_messages = [
-            {"role": "system", "content": EXTRACTION_SYSTEM},
-            {
-                "role": "user",
-                "content": EXTRACTION_USER.format(
-                    transcript=transcript,
-                    context_block=context_block,
-                ),
-            },
-        ]
-        validated = complete_structured(retry_messages, schema=Extraction)
+    extraction_dict: dict[str, Any]
+    if strategy == "chunked":
+        chunks = preprocessor.create_chunked_prompts(
+            segments,
+            chunk_size=settings.extraction_chunk_size,
+            overlap=settings.extraction_chunk_overlap,
+        )
+        extraction_dict, chunk_metadata = _extract_chunked(transcript, chunks, base_context)
+        base_context["chunk_runs"] = chunk_metadata
+        base_context["total_chunks"] = len(chunks)
+    else:
+        transcript_for_llm = focused_transcript or transcript
+        validated = _extract_single_pass(transcript_for_llm, base_context)
+        extraction_dict = validated.model_dump()
+        base_context["focused_chars"] = len(transcript_for_llm)
 
-    # Apply deduplication to remove duplicate requirements
-    extraction_dict = validated.model_dump()
-    extraction_dict = _normalize_core_names(extraction_dict, transcript)
-    extraction_dict = _bootstrap_requirements_from_context(extraction_dict, context)
-    extraction_dict = _ensure_modules_from_requirements(extraction_dict)
-    extraction_dict = _bootstrap_integrations_from_transcript(extraction_dict, transcript)
-    extraction_dict = deduplicate_requirements(extraction_dict)
+    extraction_dict = _finalize_extraction(extraction_dict, transcript, base_context)
+    sparse, sparse_reasons = _extraction_is_sparse(extraction_dict, base_context)
 
-    # Re-validate the deduplication didn't break schema
+    if sparse:
+        logger.warning("Extraction considered sparse after %s strategy: %s", strategy, "; ".join(sparse_reasons))
+        fallback_context = dict(base_context)
+        fallback_context["strategy"] = "focused-fallback"
+        fallback_context["fallback_reason"] = "; ".join(sparse_reasons)
+        fallback_input = focused_transcript or transcript
+        fallback_validated = _extract_single_pass(fallback_input, fallback_context)
+        fallback_extraction = _finalize_extraction(fallback_validated.model_dump(), transcript, fallback_context)
+        fallback_sparse, fallback_reasons = _extraction_is_sparse(fallback_extraction, fallback_context)
+
+        if not fallback_sparse:
+            extraction_dict = fallback_extraction
+            base_context["fallback_strategy"] = "focused-single-pass"
+            base_context["fallback_reason"] = "; ".join(sparse_reasons)
+        elif len(transcript) <= settings.extraction_full_retry_char_limit:
+            full_retry_context = dict(base_context)
+            full_retry_context["strategy"] = "full-fallback"
+            full_retry_context["fallback_reason"] = "; ".join(fallback_reasons or sparse_reasons)
+            full_retry_validated = _extract_single_pass(transcript, full_retry_context)
+            extraction_dict = _finalize_extraction(full_retry_validated.model_dump(), transcript, full_retry_context)
+            base_context["fallback_strategy"] = "full-single-pass"
+            base_context["fallback_reason"] = "; ".join(fallback_reasons or sparse_reasons)
+        else:
+            base_context["fallback_strategy"] = "focused-single-pass"
+            base_context["fallback_reason"] = "; ".join(fallback_reasons or sparse_reasons)
+            extraction_dict = fallback_extraction
+
     validated = Extraction(**extraction_dict)
 
     # Store preprocessing context for later use
-    context = context or {}
+    context = base_context or {}
     return {
         "extraction": validated.model_dump(),
         "preprocessing_context": context or {},
@@ -545,12 +821,18 @@ def parse_transcript(state: PipelineState) -> dict:
         "messages": [
             AIMessage(
                 content=(
-                    f"📊 Parsed transcript ({len(segments)} segments). "
+                    f"📊 Parsed transcript ({len(segments)} segments, strategy: {context.get('strategy', strategy)}). "
                     f"Found {len(validated.modules)} modules, "
                     f"{len(validated.requirements)} unique requirements, "
                     f"{len(validated.integrations)} integrations, "
                     f"{len(validated.unknowns)} unknowns. "
-                    f"Identified {len(context.get('client_requirements', []))} client statements.\n\n"
+                    f"Identified {len(context.get('client_requirements', []))} client statements."
+                    + (
+                        f" Used fallback: {context.get('fallback_strategy')}."
+                        if context.get('fallback_strategy')
+                        else ""
+                    )
+                    + "\n\n"
                     "Please review the extraction and provide corrections if needed."
                 )
             )

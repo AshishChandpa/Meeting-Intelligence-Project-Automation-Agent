@@ -377,7 +377,7 @@ Creation is intentionally gated by batch in the UI: Epics must complete before I
 - **State persistence** — `memory` is still the default backend. Use `mongo` backend in `.env` for restart-safe persistence.
 - **Stage 5 setup UX** — Jira config save, connection test, and preview retrieval remain API-facing helpers, but the actual Jira batch execution path now runs through graph interrupts, checkpoints, and enforced batch ordering.
 - **Jira Scrum board required** — Sprint creation via the Agile API requires a Scrum-type board. Kanban-only projects won't support Stage 5 sprints.
-- **Long transcripts** — Very long transcripts (>8k tokens) may hit context limits on smaller local models. Chunking support is planned.
+- **Long transcripts** — transcript extraction now uses three strategies: `full` (short), `topic` (medium), `chunked` (long). Long transcripts are split into overlapping chunks, each extracted independently, then merged, de-duplicated, and validated. If the merged result is sparse, the pipeline falls back to a focused single-pass or full-transcript retry. All thresholds are configurable via env vars.
 - **Streaming granularity** — SSE now emits runtime progress events, but provider-level token streaming is not implemented yet.
 
 ---
@@ -388,10 +388,13 @@ Creation is intentionally gated by batch in the UI: Epics must complete before I
 
 ```bash
 # Syntax-check the main backend/runtime files
-python3 -m py_compile src/api/main.py src/agent/runtime.py src/agent/graph.py src/agent/nodes/jira_sync.py
+python3 -m py_compile src/api/main.py src/agent/runtime.py src/agent/graph.py src/agent/nodes/jira_sync.py src/agent/nodes/parse.py src/agent/transcript_preprocessor.py
 
 # Graph-backed API smoke test (mocked runtime / no real LLM required)
 PYTHONPATH=src python3 scripts/api_graph_runtime_smoke.py
+
+# Long-transcript chunk/merge smoke test (mocked LLM)
+PYTHONPATH=src python3 scripts/long_transcript_chunking_smoke.py
 
 # Additional API / pipeline smoke helpers
 PYTHONPATH=src python3 scripts/api_smoke.py
