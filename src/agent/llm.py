@@ -20,6 +20,67 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 
+class LLMProviderUnavailableError(RuntimeError):
+    """Raised when the configured LLM provider cannot be reached."""
+
+
+def _provider_connection_hint() -> str:
+    provider = settings.llm_provider
+    if provider == "ollama":
+        return (
+            f"Ollama is not running or is unreachable at {settings.ollama_base_url}. "
+            "Start it with: ollama serve"
+        )
+    if provider == "openai":
+        return "OpenAI API is unreachable. Check your OPENAI_API_KEY and network connection."
+    if provider == "anthropic":
+        return "Anthropic API is unreachable. Check your ANTHROPIC_API_KEY and network connection."
+    if provider == "gemini":
+        return "Gemini API is unreachable. Check your GEMINI_API_KEY and network connection."
+    return f"LLM provider '{provider}' is unreachable."
+
+
+def _wrap_llm_errors(fn):
+    """Decorator that converts connection/auth errors into LLMProviderUnavailableError."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except LLMProviderUnavailableError:
+            raise
+        except Exception as exc:
+            exc_str = str(exc).lower()
+            exc_type = type(exc).__name__.lower()
+            is_connection = (
+                "connection refused" in exc_str
+                or "connecterror" in exc_type
+                or "connectionerror" in exc_type
+                or "connect error" in exc_str
+                or "errno 61" in exc_str
+                or "errno 111" in exc_str
+            )
+            is_auth = (
+                "unauthorized" in exc_str
+                or "invalid api" in exc_str
+                or "authentication" in exc_str
+                or "401" in exc_str
+                or "403" in exc_str
+            )
+            if is_connection:
+                hint = _provider_connection_hint()
+                raise LLMProviderUnavailableError(hint) from exc
+            if is_auth:
+                raise LLMProviderUnavailableError(
+                    f"LLM provider '{settings.llm_provider}' rejected the request: {exc}. "
+                    "Check your API key in .env."
+                ) from exc
+            raise
+
+    return wrapper
+
+
 def _get_chat_model(temperature: float | None = None):
     """Return the appropriate LangChain chat model based on LLM_PROVIDER.
 
@@ -96,7 +157,26 @@ def complete_structured(prompt_messages: list[dict], schema: type[T]) -> T:
             "message": f"Running structured extraction for {schema.__name__}...",
         },
     )
-    response = structured.invoke(lc_messages)
+    try:
+        response = structured.invoke(lc_messages)
+    except LLMProviderUnavailableError:
+        raise
+    except Exception as exc:
+        exc_str = str(exc).lower()
+        exc_type = type(exc).__name__.lower()
+        if (
+            "connection refused" in exc_str
+            or "connecterror" in exc_type
+            or "connect error" in exc_str
+            or "errno 61" in exc_str
+            or "errno 111" in exc_str
+        ):
+            raise LLMProviderUnavailableError(_provider_connection_hint()) from exc
+        if "unauthorized" in exc_str or "401" in exc_str or "403" in exc_str:
+            raise LLMProviderUnavailableError(
+                f"LLM provider '{settings.llm_provider}' rejected the request. Check your API key."
+            ) from exc
+        raise
     emit_stream_event(
         "llm_complete",
         {
@@ -135,7 +215,26 @@ def complete_text(prompt_messages: list[dict], temperature: float | None = None)
             "temperature": temperature,
         },
     )
-    response = model.invoke(lc_messages)
+    try:
+        response = model.invoke(lc_messages)
+    except LLMProviderUnavailableError:
+        raise
+    except Exception as exc:
+        exc_str = str(exc).lower()
+        exc_type = type(exc).__name__.lower()
+        if (
+            "connection refused" in exc_str
+            or "connecterror" in exc_type
+            or "connect error" in exc_str
+            or "errno 61" in exc_str
+            or "errno 111" in exc_str
+        ):
+            raise LLMProviderUnavailableError(_provider_connection_hint()) from exc
+        if "unauthorized" in exc_str or "401" in exc_str or "403" in exc_str:
+            raise LLMProviderUnavailableError(
+                f"LLM provider '{settings.llm_provider}' rejected the request. Check your API key."
+            ) from exc
+        raise
     content = response.content
     emit_stream_event(
         "llm_complete",

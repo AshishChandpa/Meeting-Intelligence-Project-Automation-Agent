@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from agent.config import settings
@@ -25,6 +25,7 @@ from agent.nodes.clarify import answer_human_question
 from agent.nodes.sow import sow_missing_sections
 from agent.nodes.sprint import move_task_between_sprints
 from agent.nodes.jira_sync import build_jira_preview
+from agent.llm import LLMProviderUnavailableError
 from agent.runtime import delete_graph_thread, run_graph, sync_project_with_graph, update_graph_state
 
 logger = logging.getLogger(__name__)
@@ -219,6 +220,14 @@ async def _run_graph_for_project(
         sync_project_with_graph(project)
         project_repo.upsert(project)
         return project
+    except LLMProviderUnavailableError as exc:
+        _schedule_project_event(
+            loop,
+            project_id,
+            "graph_error",
+            {"message": str(exc)},
+        )
+        raise
     except Exception:
         _schedule_project_event(
             loop,
@@ -302,6 +311,52 @@ async def health_check():
     }
 
 
+@app.get("/api/health/llm")
+async def llm_health_check():
+    """Check whether the configured LLM provider is reachable."""
+    import httpx as _httpx
+
+    provider = settings.llm_provider
+    if provider == "ollama":
+        try:
+            async with _httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"{settings.ollama_base_url}/api/tags")
+            if r.status_code == 200:
+                data = r.json()
+                model_names = [m.get("name", "") for m in data.get("models", [])]
+                return {
+                    "status": "ok",
+                    "provider": provider,
+                    "base_url": settings.ollama_base_url,
+                    "model": settings.ollama_model,
+                    "available_models": model_names,
+                    "model_pulled": settings.ollama_model in model_names,
+                }
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "provider": provider,
+                    "detail": f"Ollama returned HTTP {r.status_code}",
+                },
+            )
+        except Exception as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "provider": provider,
+                    "detail": f"Cannot reach Ollama at {settings.ollama_base_url}: {exc}. Run: ollama serve",
+                },
+            )
+    # For cloud providers just report configured/not
+    return {
+        "status": "ok",
+        "provider": provider,
+        "detail": "Cloud provider — reachability not pre-checked.",
+    }
+
+
 @app.post("/api/projects", response_model=CreateProjectResponse)
 async def create_project(request: CreateProjectRequest):
     """Create a new project with a transcript and start Stage 1 parsing."""
@@ -342,6 +397,10 @@ async def create_project(request: CreateProjectRequest):
             status="parse",
         )
 
+    except LLMProviderUnavailableError as e:
+        project_repo.delete(project_id)
+        logger.error("LLM provider unavailable when creating project: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         project_repo.delete(project_id)
         logger.exception("Failed to create project")
