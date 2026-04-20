@@ -53,3 +53,25 @@
     @apply bg-background text-foreground;
   }
 }
+
+@layer components {
+  .surface-muted {
+    @apply border-border bg-muted/50 text-foreground;
+  }
+
+  .surface-info {
+    @apply border-sky-200 bg-sky-50 text-sky-900 dark:border-sky-900/80 dark:bg-sky-950/40 dark:text-sky-100;
+  }
+
+  .surface-success {
+    @apply border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-900/80 dark:bg-emerald-950/40 dark:text-emerald-100;
+  }
+
+  .surface-warning {
+    @apply border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/80 dark:bg-amber-950/40 dark:text-amber-100;
+  }
+
+  .surface-destructive {
+    @apply border-rose-200 bg-rose-50 text-rose-900 dark:border-rose-900/80 dark:bg-rose-950/40 dark:text-rose-100;
+  }
+}

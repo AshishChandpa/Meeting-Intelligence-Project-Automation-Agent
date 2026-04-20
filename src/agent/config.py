@@ -78,28 +78,28 @@ class Settings:
 
     # Transcript extraction strategy thresholds
     extraction_topic_char_threshold: int = field(
-        default_factory=lambda: int(os.getenv("EXTRACTION_TOPIC_CHAR_THRESHOLD", "14000"))
+        default_factory=lambda: int(os.getenv("EXTRACTION_TOPIC_CHAR_THRESHOLD", "140000"))
     )
     extraction_topic_segment_threshold: int = field(
         default_factory=lambda: int(os.getenv("EXTRACTION_TOPIC_SEGMENT_THRESHOLD", "45"))
     )
     extraction_chunk_char_threshold: int = field(
-        default_factory=lambda: int(os.getenv("EXTRACTION_CHUNK_CHAR_THRESHOLD", "24000"))
+        default_factory=lambda: int(os.getenv("EXTRACTION_CHUNK_CHAR_THRESHOLD", "240000"))
     )
     extraction_chunk_segment_threshold: int = field(
-        default_factory=lambda: int(os.getenv("EXTRACTION_CHUNK_SEGMENT_THRESHOLD", "70"))
+        default_factory=lambda: int(os.getenv("EXTRACTION_CHUNK_SEGMENT_THRESHOLD", "100"))
     )
     extraction_chunk_word_threshold: int = field(
         default_factory=lambda: int(os.getenv("EXTRACTION_CHUNK_WORD_THRESHOLD", "4200"))
     )
     extraction_chunk_size: int = field(
-        default_factory=lambda: int(os.getenv("EXTRACTION_CHUNK_SIZE", "12"))
+        default_factory=lambda: int(os.getenv("EXTRACTION_CHUNK_SIZE", "100"))
     )
     extraction_chunk_overlap: int = field(
         default_factory=lambda: int(os.getenv("EXTRACTION_CHUNK_OVERLAP", "3"))
     )
     extraction_focused_max_chars: int = field(
-        default_factory=lambda: int(os.getenv("EXTRACTION_FOCUSED_MAX_CHARS", "14000"))
+        default_factory=lambda: int(os.getenv("EXTRACTION_FOCUSED_MAX_CHARS", "140000"))
     )
     extraction_sparse_requirement_threshold: int = field(
         default_factory=lambda: int(os.getenv("EXTRACTION_SPARSE_REQUIREMENT_THRESHOLD", "6"))
@@ -108,7 +108,7 @@ class Settings:
         default_factory=lambda: int(os.getenv("EXTRACTION_SPARSE_MODULE_THRESHOLD", "2"))
     )
     extraction_full_retry_char_limit: int = field(
-        default_factory=lambda: int(os.getenv("EXTRACTION_FULL_RETRY_CHAR_LIMIT", "36000"))
+        default_factory=lambda: int(os.getenv("EXTRACTION_FULL_RETRY_CHAR_LIMIT", "3600"))
     )
 
     @property

@@ -8,7 +8,7 @@ import { Input } from './ui/Input'
 import { Textarea } from './ui/Textarea'
 
 export function ProjectSwitcher() {
-  const { projects, currentProject, setProjects, setCurrentProject, addProject, removeProject, setIsLoading, setError } =
+  const { projects, currentProject, setProjects, setCurrentProject, addProject, removeProject, pushStreamEvent, setIsLoading, setError } =
     useProjectStore()
 
   const [isOpen, setIsOpen] = useState(false)
@@ -38,8 +38,19 @@ export function ProjectSwitcher() {
     try {
       setIsLoading(true)
       const project = await createProject({ name: newProjectName, transcript: newTranscript })
+      const hydratedProject = await getProject(project.id)
+
       addProject(project)
+      setCurrentProject(hydratedProject)
+      pushStreamEvent({
+        event: 'stage_progress',
+        project_id: project.id,
+        stage: hydratedProject.current_stage,
+        progress: 5,
+        message: 'Project created. Transcript uploaded and initial extraction is starting...',
+      })
       setIsCreating(false)
+      setIsOpen(false)
       setNewProjectName('')
       setNewTranscript('')
       await loadProjects()
@@ -106,7 +117,7 @@ export function ProjectSwitcher() {
           </div>
 
           {isCreating && (
-            <Card className="mb-4 p-4">
+            <Card className="mb-4 border-primary/20 bg-primary/5 p-4">
               <Input
                 placeholder="Project name"
                 value={newProjectName}
@@ -119,6 +130,9 @@ export function ProjectSwitcher() {
                 onChange={(e) => setNewTranscript(e.target.value)}
                 className="mb-3 min-h-[150px]"
               />
+              <p className="mb-3 text-xs text-muted-foreground">
+                After you click create, this project will open automatically and the live activity log will show extraction progress.
+              </p>
               <div className="flex gap-2">
                 <Button size="sm" onClick={handleCreateProject} disabled={!newProjectName || !newTranscript}>
                   Create

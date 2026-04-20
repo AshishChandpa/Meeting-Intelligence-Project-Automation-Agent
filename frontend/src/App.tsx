@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useProjectStore } from './store/projectStore'
 import { ProjectSwitcher } from './components/ProjectSwitcher'
 import { StageProgress } from './components/StageProgress'
+import { RuntimeActivityPanel } from './components/RuntimeActivityPanel'
 import { useProjectStream } from './hooks/useProjectStream'
 import { ParseStage } from './components/stages/ParseStage'
 import { ClarifyStage } from './components/stages/ClarifyStage'
@@ -11,7 +12,7 @@ import { JiraStage } from './components/stages/JiraStage'
 import { Loader2, AlertCircle } from 'lucide-react'
 
 function App() {
-  const { currentProject, isLoading, error, latestStreamEvent, setError } = useProjectStore()
+  const { currentProject, isLoading, error, latestStreamEvent, streamEvents, setError } = useProjectStore()
   useProjectStream(currentProject?.id ?? null)
 
   useEffect(() => {
@@ -25,9 +26,11 @@ function App() {
     if (!currentProject) {
       return (
         <div className="flex flex-1 items-center justify-center">
-          <div className="text-center">
+          <div className="surface-muted max-w-xl rounded-2xl border border-dashed p-10 text-center shadow-sm">
             <h2 className="text-2xl font-semibold">No project selected</h2>
-            <p className="mt-2 text-muted-foreground">Select or create a project to get started</p>
+            <p className="mt-2 text-muted-foreground">
+              Create a project with a transcript to start the graph workflow and watch live activity appear here.
+            </p>
           </div>
         </div>
       )
@@ -80,13 +83,13 @@ function App() {
 
       {/* Error Banner */}
       {error && (
-        <div className="border-b bg-destructive/10 px-4 py-3">
-          <div className="container mx-auto flex items-center gap-2 text-sm text-destructive">
+        <div className="border-b border-rose-200 bg-rose-50 px-4 py-3 text-rose-800 dark:border-rose-900/80 dark:bg-rose-950/40 dark:text-rose-200">
+          <div className="container mx-auto flex items-center gap-2 text-sm">
             <AlertCircle className="h-4 w-4" />
             <span>{error}</span>
             <button
               onClick={() => setError(null)}
-              className="ml-auto text-destructive hover:underline"
+              className="ml-auto hover:underline"
             >
               Dismiss
             </button>
@@ -94,37 +97,16 @@ function App() {
         </div>
       )}
 
-      {/* Runtime Progress Banner */}
-      {currentProject && latestStreamEvent && latestStreamEvent.project_id === currentProject.id && (
-        <div className="border-b bg-primary/5 px-4 py-3">
-          <div className="container mx-auto space-y-2 text-sm">
-            <div className="flex flex-wrap items-center gap-3 text-muted-foreground">
-              <span className="font-medium text-foreground">Runtime</span>
-              {typeof latestStreamEvent.progress === 'number' && (
-                <span>{latestStreamEvent.progress}%</span>
-              )}
-              {latestStreamEvent.node && <span>Node: {latestStreamEvent.node}</span>}
-              {currentProject.graph_checkpoint_id && (
-                <span className="font-mono text-xs">Checkpoint: {currentProject.graph_checkpoint_id.slice(0, 8)}</span>
-              )}
-            </div>
-            {latestStreamEvent.message && (
-              <div className="text-foreground">{latestStreamEvent.message}</div>
-            )}
-            {currentProject.pending_interrupts && currentProject.pending_interrupts.length > 0 && (
-              <div className="text-xs text-muted-foreground">
-                Awaiting review: {currentProject.pending_interrupts[0].message || currentProject.current_stage}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* Main Content */}
       <main className="container mx-auto px-4 py-8">
         {currentProject && (
-          <div className="mb-6">
+          <div className="mb-6 space-y-4">
             <StageProgress currentStage={currentProject.current_stage} />
+            <RuntimeActivityPanel
+              project={currentProject}
+              latestEvent={latestStreamEvent}
+              events={streamEvents}
+            />
           </div>
         )}
         <div className="max-w-5xl mx-auto">

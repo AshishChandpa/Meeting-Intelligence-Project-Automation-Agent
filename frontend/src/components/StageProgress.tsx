@@ -29,11 +29,11 @@ export function StageProgress({ currentStage }: StageProgressProps) {
           <div key={stage.key} className="flex items-center">
             <div
               className={cn(
-                'flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors',
+                'flex min-w-[150px] items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-colors',
                 {
-                  'bg-primary text-primary-foreground': isCurrent,
-                  'bg-muted text-muted-foreground': isComplete,
-                  'border-dashed opacity-50': isLocked,
+                  'border-primary/20 bg-primary/10 text-primary shadow-sm': isCurrent,
+                  'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/80 dark:bg-emerald-950/30 dark:text-emerald-300': isComplete,
+                  'border-dashed bg-muted/40 text-muted-foreground opacity-80': isLocked,
                 },
               )}
             >
@@ -50,7 +50,7 @@ export function StageProgress({ currentStage }: StageProgressProps) {
               </div>
             </div>
             {index < STAGES.length - 1 && (
-              <div className="mx-1 h-px w-8 bg-border" />
+              <div className="mx-1 h-px w-8 bg-border/80" />
             )}
           </div>
         )

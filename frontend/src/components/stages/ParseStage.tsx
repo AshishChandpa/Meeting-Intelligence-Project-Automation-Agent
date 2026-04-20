@@ -153,12 +153,12 @@ export function ParseStage() {
         {/* Assumptions */}
         {extraction.assumptions && extraction.assumptions.length > 0 && (
           <div>
-            <h3 className="mb-3 text-lg font-semibold text-blue-600 dark:text-blue-400">
+            <h3 className="mb-3 text-lg font-semibold text-sky-700 dark:text-sky-300">
               Assumptions ({extraction.assumptions.length})
             </h3>
             <div className="space-y-2">
               {extraction.assumptions.map((assumption: any, i: number) => (
-                <div key={i} className="rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-900 dark:bg-blue-950">
+                <div key={i} className="rounded-md border border-sky-200 bg-sky-50 p-3 dark:border-sky-900/80 dark:bg-sky-950/40">
                   <div className="flex items-start justify-between gap-2">
                     <p className="text-sm flex-1">{assumption.description}</p>
                     <Badge variant={assumption.confidence || "medium"} className="shrink-0">
@@ -174,12 +174,12 @@ export function ParseStage() {
         {/* Unknowns */}
         {extraction.unknowns.length > 0 && (
           <div>
-            <h3 className="mb-3 text-lg font-semibold text-yellow-600 dark:text-yellow-400">
+            <h3 className="mb-3 text-lg font-semibold text-amber-700 dark:text-amber-300">
               Unknowns ({extraction.unknowns.length})
             </h3>
             <div className="space-y-2">
               {extraction.unknowns.map((unknown, i: number) => (
-                <div key={i} className="rounded-md border border-yellow-200 bg-yellow-50 p-3 dark:border-yellow-900 dark:bg-yellow-950">
+                <div key={i} className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/80 dark:bg-amber-950/40">
                   <p className="text-sm">{unknown.description}</p>
                   {unknown.source && <p className="mt-1 text-xs text-muted-foreground">Source: {unknown.source}</p>}
                 </div>
