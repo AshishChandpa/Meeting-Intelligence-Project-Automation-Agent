@@ -189,6 +189,7 @@ export interface ProjectState {
   sprint_warnings?: string[]
   jira_results?: JiraResult[]
   jira_batch_status?: Partial<Record<JiraBatch, JiraBatchState>>
+  jira_config_status?: JiraConfigStatus
   graph_checkpoint_id?: string
   graph_next_nodes?: string[]
   pending_interrupts?: PendingInterrupt[]
@@ -199,6 +200,14 @@ export interface ProjectState {
   stage4_approved?: boolean
   stage5_done?: boolean
   created_at?: number
+}
+
+export interface JiraConfigStatus {
+  has_config: boolean
+  source: 'project' | 'state' | 'env' | 'none'
+  domain: string
+  email: string
+  project_key: string
 }
 
 // ── API Request/Response types ───────────────────────────────────────────────

@@ -145,6 +145,7 @@ def project_to_response(project: dict[str, Any]) -> dict[str, Any]:
         "sprint_warnings": state.get("sprint_warnings", []),
         "jira_results": state.get("jira_results", []),
         "jira_batch_status": _jira_batch_status(state),
+        "jira_config_status": _jira_config_status(project),
         "graph_checkpoint_id": state.get("graph_checkpoint_id", ""),
         "graph_next_nodes": state.get("graph_next_nodes", []),
         "pending_interrupts": state.get("pending_interrupts", []),
@@ -249,6 +250,71 @@ def _sync_manual_graph_state(project_id: str, values: dict[str, Any], *, as_node
 
 def _jira_batch_status(state: dict[str, Any]) -> dict[str, str]:
     return dict(state.get("jira_batch_status", {}))
+
+
+def _resolve_jira_config(project: dict[str, Any]) -> tuple[dict[str, str] | None, str]:
+    state_cfg = project.get("state", {}).get("jira_config")
+    project_cfg = project.get("jira_config")
+    env_cfg = settings.jira_config_from_env
+
+    if isinstance(project_cfg, dict) and project_cfg:
+        return project_cfg, "project"
+    if isinstance(state_cfg, dict) and state_cfg:
+        return state_cfg, "state"
+    if env_cfg:
+        return env_cfg, "env"
+    return None, "none"
+
+
+def _jira_config_status(project: dict[str, Any]) -> dict[str, Any]:
+    cfg, source = _resolve_jira_config(project)
+    if not cfg:
+        return {
+            "has_config": False,
+            "source": "none",
+            "domain": "",
+            "email": "",
+            "project_key": "",
+        }
+
+    return {
+        "has_config": True,
+        "source": source,
+        "domain": cfg.get("domain", ""),
+        "email": cfg.get("email", ""),
+        "project_key": cfg.get("project_key", ""),
+    }
+
+
+def _missing_jira_env_keys() -> list[str]:
+    missing: list[str] = []
+    if not settings.jira_domain:
+        missing.append("JIRA_DOMAIN")
+    if not settings.jira_email:
+        missing.append("JIRA_EMAIL")
+    if not settings.jira_api_token:
+        missing.append("JIRA_API_TOKEN")
+    if not settings.jira_project_key:
+        missing.append("JIRA_PROJECT_KEY")
+    return missing
+
+
+def _jira_config_missing_detail(project: dict[str, Any]) -> str:
+    status = _jira_config_status(project)
+    missing_env = _missing_jira_env_keys()
+    source = status.get("source", "none")
+
+    if missing_env:
+        env_hint = f"Missing env keys: {', '.join(missing_env)}."
+    else:
+        env_hint = "Env keys are present. If you updated .env recently, restart backend to reload settings."
+
+    return (
+        "Jira config not set. "
+        f"Resolved source: {source}. "
+        f"{env_hint} "
+        "Provide Jira config in Stage 5 or set env vars and restart backend."
+    )
 
 
 def _pending_jira_batch(state: dict[str, Any]) -> str:
@@ -733,10 +799,14 @@ async def set_jira_config(project_id: str, request: JiraConfigRequest):
 async def test_jira_connection(project_id: str):
     """Test Jira connection."""
     project = get_project(project_id)
-    jira_config = project.get("jira_config")
+    jira_config, source = _resolve_jira_config(project)
 
     if not jira_config:
-        raise HTTPException(status_code=400, detail="Jira config not set")
+        logger.warning("Jira config missing for project %s", project_id)
+        raise HTTPException(
+            status_code=400,
+            detail=_jira_config_missing_detail(project),
+        )
 
     try:
         from agent.jira import JiraClient
@@ -748,7 +818,7 @@ async def test_jira_connection(project_id: str):
             project_key=jira_config["project_key"],
         )
         client.test_connection()
-        return {"message": "Jira connection successful"}
+        return {"message": f"Jira connection successful (source: {source})"}
 
     except Exception as e:
         logger.exception("Jira connection test failed")
@@ -777,10 +847,16 @@ async def get_jira_preview(project_id: str):
 async def sync_to_jira_batch_endpoint(project_id: str, batch: Literal["epics", "issues", "sprints"]):
     """Sync one Jira batch only (epics -> issues -> sprints)."""
     project = get_project(project_id)
-    jira_config = project.get("jira_config")
+    jira_config, _ = _resolve_jira_config(project)
 
     if not jira_config:
-        raise HTTPException(status_code=400, detail="Jira config not set. Please set it first.")
+        raise HTTPException(
+            status_code=400,
+            detail=_jira_config_missing_detail(project),
+        )
+
+    project["jira_config"] = jira_config
+    _sync_manual_graph_state(project_id, {"jira_config": jira_config})
 
     allowed, message = _is_batch_allowed(project["state"], batch)
     if not allowed:
@@ -809,10 +885,16 @@ async def sync_to_jira_batch_endpoint(project_id: str, batch: Literal["epics", "
 async def sync_to_jira_endpoint(project_id: str):
     """Execute Jira sync."""
     project = get_project(project_id)
-    jira_config = project.get("jira_config")
+    jira_config, _ = _resolve_jira_config(project)
 
     if not jira_config:
-        raise HTTPException(status_code=400, detail="Jira config not set. Please set it first.")
+        raise HTTPException(
+            status_code=400,
+            detail=_jira_config_missing_detail(project),
+        )
+
+    project["jira_config"] = jira_config
+    _sync_manual_graph_state(project_id, {"jira_config": jira_config})
 
     batches, message = _remaining_jira_batches(project["state"])
     if not batches:

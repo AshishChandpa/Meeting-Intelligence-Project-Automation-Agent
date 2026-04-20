@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useProjectStore } from '@/store/projectStore'
 import { getProject, setJiraConfig, testJiraConnection, getJiraPreview, syncToJiraBatch } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card'
+import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
 import { Loader2, ExternalLink, CheckCircle2, XCircle } from 'lucide-react'
@@ -22,6 +23,36 @@ export function JiraStage() {
   const [activeBatch, setActiveBatch] = useState<'epics' | 'issues' | 'sprints' | null>(null)
 
   const jiraResults = currentProject?.jira_results || []
+  const jiraConfigStatus = currentProject?.jira_config_status
+  const hasDetectedConfig = Boolean(jiraConfigStatus?.has_config)
+
+  useEffect(() => {
+    if (!currentProject || !hasDetectedConfig || !jiraConfigStatus) return
+
+    setJiraConfigState((prev) => ({
+      ...prev,
+      domain: prev.domain || jiraConfigStatus.domain,
+      email: prev.email || jiraConfigStatus.email,
+      project_key: prev.project_key || jiraConfigStatus.project_key,
+    }))
+
+    void (async () => {
+      try {
+        const data = await getJiraPreview(currentProject.id)
+        setPreview(data)
+      } catch {
+        // Keep UI usable even if preview fetch fails; users can retry via Save/Test.
+      }
+    })()
+  }, [currentProject, hasDetectedConfig, jiraConfigStatus])
+
+  const formatApiError = (error: any) => {
+    const detail = error?.response?.data?.detail
+    if (typeof detail === 'string' && detail.trim()) return detail
+    if (Array.isArray(detail) && detail.length > 0) return String(detail[0]?.msg || detail[0])
+    if (typeof error?.message === 'string' && error.message.trim()) return error.message
+    return String(error)
+  }
 
   const handleSetConfig = async () => {
     if (!currentProject || !jiraConfig.domain || !jiraConfig.email || !jiraConfig.api_token || !jiraConfig.project_key) {
@@ -35,7 +66,7 @@ export function JiraStage() {
       await loadPreview()
       setTestResult(null)
     } catch (error: any) {
-      setError(`Failed to save config: ${error}`)
+      setError(`Failed to save config: ${formatApiError(error)}`)
     } finally {
       setIsLoading(false)
     }
@@ -46,11 +77,11 @@ export function JiraStage() {
 
     try {
       setIsTesting(true)
-      await testJiraConnection(currentProject.id)
-      setTestResult({ success: true, message: 'Connection successful!' })
+      const response = await testJiraConnection(currentProject.id)
+      setTestResult({ success: true, message: response.message || 'Connection successful!' })
       await loadPreview()
     } catch (error: any) {
-      setTestResult({ success: false, message: `Connection failed: ${error}` })
+      setTestResult({ success: false, message: `Connection failed: ${formatApiError(error)}` })
     } finally {
       setIsTesting(false)
     }
@@ -63,7 +94,7 @@ export function JiraStage() {
       const data = await getJiraPreview(currentProject.id)
       setPreview(data)
     } catch (error: any) {
-      setError(`Failed to load preview: ${error}`)
+      setError(`Failed to load preview: ${formatApiError(error)}`)
     }
   }
 
@@ -80,7 +111,7 @@ export function JiraStage() {
       setCurrentProject(updated)
       await loadPreview()
     } catch (error: any) {
-      setError(`Failed to sync ${batch}: ${error}`)
+      setError(`Failed to sync ${batch}: ${formatApiError(error)}`)
     } finally {
       setIsSyncing(false)
       setActiveBatch(null)
@@ -108,16 +139,28 @@ export function JiraStage() {
         </div>
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* Help banner */}
-        <div className="rounded-md border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950">
-          <h4 className="font-semibold text-blue-900 dark:text-blue-100">Need help setting up Jira?</h4>
-          <ul className="mt-2 space-y-1 text-sm text-blue-800 dark:text-blue-200">
-            <li>• <strong>Domain:</strong> Your Atlassian URL (e.g., `mycompany.atlassian.net`)</li>
-            <li>• <strong>API Token:</strong> Get it from <a href="https://id.atlassian.com/manage-api-tokens" target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-600">id.atlassian.com/manage-api-tokens</a></li>
-            <li>• <strong>Project Key:</strong> Check your Jira project URL (e.g., `MIP`, `DEMO`)</li>
-            <li>• Project type must be <strong>Scrum</strong> (not Kanban)</li>
-          </ul>
-        </div>
+        {hasDetectedConfig ? (
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900/80 dark:bg-emerald-950/40">
+            <div className="flex items-center gap-2">
+              <h4 className="font-semibold text-emerald-900 dark:text-emerald-100">Jira configuration detected</h4>
+              <Badge variant="success">{jiraConfigStatus?.source || 'project'}</Badge>
+            </div>
+            <p className="mt-2 text-sm text-emerald-800 dark:text-emerald-200">
+              Using <strong>{jiraConfigStatus?.domain}</strong> ({jiraConfigStatus?.project_key}) for this project.
+              You can test the connection directly, or save a manual override below.
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-md border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950">
+            <h4 className="font-semibold text-blue-900 dark:text-blue-100">Need help setting up Jira?</h4>
+            <ul className="mt-2 space-y-1 text-sm text-blue-800 dark:text-blue-200">
+              <li>• <strong>Domain:</strong> Your Atlassian URL (e.g., `mycompany.atlassian.net`)</li>
+              <li>• <strong>API Token:</strong> Get it from <a href="https://id.atlassian.com/manage-api-tokens" target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-600">id.atlassian.com/manage-api-tokens</a></li>
+              <li>• <strong>Project Key:</strong> Check your Jira project URL (e.g., `MIP`, `DEMO`)</li>
+              <li>• Project type must be <strong>Scrum</strong> (not Kanban)</li>
+            </ul>
+          </div>
+        )}
 
         {/* Jira Config */}
         <div className="space-y-3">
@@ -134,7 +177,7 @@ export function JiraStage() {
               onChange={(e) => setJiraConfigState({ ...jiraConfig, email: e.target.value })}
             />
             <Input
-              placeholder="API Token"
+              placeholder={hasDetectedConfig ? 'API Token (only needed to override detected config)' : 'API Token'}
               type="password"
               value={jiraConfig.api_token}
               onChange={(e) => setJiraConfigState({ ...jiraConfig, api_token: e.target.value })}
@@ -147,7 +190,7 @@ export function JiraStage() {
           </div>
           <div className="flex gap-2">
             <Button onClick={handleSetConfig} size="sm">
-              Save Config
+              {hasDetectedConfig ? 'Save Override Config' : 'Save Config'}
             </Button>
             <Button onClick={handleTestConnection} size="sm" variant="secondary" disabled={isTesting}>
               {isTesting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
@@ -155,7 +198,7 @@ export function JiraStage() {
             </Button>
           </div>
           {testResult && (
-            <div className={`rounded-md p-3 ${testResult.success ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
+            <div className={`rounded-md p-3 ${testResult.success ? 'bg-green-50 text-green-800 dark:bg-green-950/40 dark:text-green-200' : 'bg-red-50 text-red-800 dark:bg-red-950/40 dark:text-red-200'}`}>
               {testResult.message}
             </div>
           )}
@@ -259,3 +302,4 @@ export function JiraStage() {
     </Card>
   )
 }
+

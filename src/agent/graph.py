@@ -181,7 +181,7 @@ def _review_jira_batch(state: PipelineState, batch: Literal["epics", "issues", "
         return Command(goto=goto_node, update={"jira_config": user_input})
 
     if str(user_input).strip().lower() in {batch, f"confirm {batch}", "confirm"} and cfg:
-        return Command(goto=goto_node)
+        return Command(goto=goto_node, update={"jira_config": cfg})
 
     return Command(goto=f"review_jira_{batch}")
 

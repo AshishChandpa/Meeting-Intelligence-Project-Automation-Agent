@@ -37,7 +37,21 @@ export async function listProjects(): Promise<ProjectListItem[]> {
 
 export async function createProject(request: CreateProjectRequest): Promise<ProjectListItem> {
   const response = await api.post('/api/projects', request)
-  return response.data
+  const payload = response.data as {
+    id?: string
+    project_id?: string
+    name?: string
+    status?: string
+    current_stage?: string
+    created_at?: number | null
+  }
+
+  return {
+    id: payload.id || payload.project_id || '',
+    name: payload.name || request.name,
+    current_stage: (payload.current_stage as ProjectListItem['current_stage']) || (payload.status as ProjectListItem['current_stage']) || 'parse',
+    created_at: payload.created_at ?? null,
+  }
 }
 
 export async function getProject(projectId: string): Promise<ProjectState> {
