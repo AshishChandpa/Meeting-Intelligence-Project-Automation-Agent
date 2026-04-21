@@ -1,24 +1,24 @@
 import { useEffect, useState } from 'react'
 import { useProjectStore } from '@/store/projectStore'
-import { getProject, setJiraConfig, testJiraConnection, getJiraPreview, syncToJiraBatch } from '@/lib/api'
+import { approveSprintPlan, getProject, getJiraPreview, syncToJiraBatch } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
-import { Input } from '../ui/Input'
 import { Loader2, ExternalLink, CheckCircle2, XCircle } from 'lucide-react'
-import type { JiraConfig, JiraPreview, JiraResult } from '@/types'
+import type { JiraBatch, JiraPreview, JiraResult, PendingInterrupt } from '@/types'
+
+function getPendingJiraBatch(interrupts?: PendingInterrupt[]): JiraBatch | null {
+  const interrupt = interrupts?.find((item) => item?.stage === 'jira' && typeof item?.batch === 'string')
+  if (!interrupt) return null
+  const batch = String(interrupt.batch)
+  if (batch === 'epics' || batch === 'issues' || batch === 'sprints') return batch
+  return null
+}
 
 export function JiraStage() {
-  const { currentProject, setCurrentProject, setIsLoading, setError } = useProjectStore()
-  const [jiraConfig, setJiraConfigState] = useState<Partial<JiraConfig>>({
-    domain: '',
-    email: '',
-    api_token: '',
-    project_key: '',
-  })
-  const [isTesting, setIsTesting] = useState(false)
+  const { currentProject, setCurrentProject, setError } = useProjectStore()
   const [isSyncing, setIsSyncing] = useState(false)
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [isRecovering, setIsRecovering] = useState(false)
   const [preview, setPreview] = useState<JiraPreview | null>(null)
   const [activeBatch, setActiveBatch] = useState<'epics' | 'issues' | 'sprints' | null>(null)
 
@@ -27,24 +27,19 @@ export function JiraStage() {
   const hasDetectedConfig = Boolean(jiraConfigStatus?.has_config)
 
   useEffect(() => {
-    if (!currentProject || !hasDetectedConfig || !jiraConfigStatus) return
-
-    setJiraConfigState((prev) => ({
-      ...prev,
-      domain: prev.domain || jiraConfigStatus.domain,
-      email: prev.email || jiraConfigStatus.email,
-      project_key: prev.project_key || jiraConfigStatus.project_key,
-    }))
+    if (!currentProject) return
 
     void (async () => {
       try {
+        const updated = await getProject(currentProject.id)
+        setCurrentProject(updated)
         const data = await getJiraPreview(currentProject.id)
         setPreview(data)
       } catch {
-        // Keep UI usable even if preview fetch fails; users can retry via Save/Test.
+        // Keep UI usable even if state refresh fails; manual actions can retry.
       }
     })()
-  }, [currentProject, hasDetectedConfig, jiraConfigStatus])
+  }, [currentProject?.id, setCurrentProject])
 
   const formatApiError = (error: any) => {
     const detail = error?.response?.data?.detail
@@ -54,38 +49,6 @@ export function JiraStage() {
     return String(error)
   }
 
-  const handleSetConfig = async () => {
-    if (!currentProject || !jiraConfig.domain || !jiraConfig.email || !jiraConfig.api_token || !jiraConfig.project_key) {
-      setError('Please fill in all Jira configuration fields')
-      return
-    }
-
-    try {
-      setIsLoading(true)
-      await setJiraConfig(currentProject.id, jiraConfig as JiraConfig)
-      await loadPreview()
-      setTestResult(null)
-    } catch (error: any) {
-      setError(`Failed to save config: ${formatApiError(error)}`)
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleTestConnection = async () => {
-    if (!currentProject) return
-
-    try {
-      setIsTesting(true)
-      const response = await testJiraConnection(currentProject.id)
-      setTestResult({ success: true, message: response.message || 'Connection successful!' })
-      await loadPreview()
-    } catch (error: any) {
-      setTestResult({ success: false, message: `Connection failed: ${formatApiError(error)}` })
-    } finally {
-      setIsTesting(false)
-    }
-  }
 
   const loadPreview = async () => {
     if (!currentProject) return
@@ -98,19 +61,88 @@ export function JiraStage() {
     }
   }
 
+  const recoverJiraGate = async () => {
+    if (!currentProject) return null
+
+    setIsRecovering(true)
+    try {
+      let refreshed = await getProject(currentProject.id)
+      setCurrentProject(refreshed)
+
+      const hasPending = Boolean(getPendingJiraBatch(refreshed.pending_interrupts))
+      if (!hasPending && !refreshed.stage5_done) {
+        await approveSprintPlan(currentProject.id)
+        refreshed = await getProject(currentProject.id)
+        setCurrentProject(refreshed)
+      }
+
+      const data = await getJiraPreview(currentProject.id)
+      setPreview(data)
+      return refreshed
+    } catch (error: any) {
+      setError(`Failed to resume Stage 5: ${formatApiError(error)}`)
+      return null
+    } finally {
+      setIsRecovering(false)
+    }
+  }
+
   const handleSyncBatch = async (batch: 'epics' | 'issues' | 'sprints') => {
     if (!currentProject) return
-
-    if (!confirm(`This will create ${batch} in Jira. Continue?`)) return
 
     try {
       setIsSyncing(true)
       setActiveBatch(batch)
+
+      // Refresh graph checkpoint state before triggering a Jira batch write.
+      let latest = await getProject(currentProject.id)
+      setCurrentProject(latest)
+      let expectedBatch = getPendingJiraBatch(latest.pending_interrupts)
+
+      // If Stage 4 is approved but no pending interrupt, trigger graph progression first
+      if (!expectedBatch && latest.stage4_approved && !latest.stage5_done && hasTasksAndSprints) {
+        setError('Progressing to Stage 5... please wait.')
+        await approveSprintPlan(currentProject.id)
+        // Wait a moment for graph to progress
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        latest = await getProject(currentProject.id)
+        setCurrentProject(latest)
+        expectedBatch = getPendingJiraBatch(latest.pending_interrupts)
+      }
+
+      if (expectedBatch !== batch) {
+        const nextStep = expectedBatch
+          ? `Current Jira review step expects '${expectedBatch}'.`
+          : 'Stage 5 is not currently awaiting Jira batch confirmation.'
+        setError(`Cannot sync '${batch}' right now. ${nextStep} Refresh project flow and retry.`)
+        return
+      }
+
+      if (!confirm(`This will create ${batch} in Jira. Continue?`)) return
+
       await syncToJiraBatch(currentProject.id, batch)
       const updated = await getProject(currentProject.id)
       setCurrentProject(updated)
       await loadPreview()
     } catch (error: any) {
+      const shouldRecover =
+        error?.response?.status === 400
+        && String(error?.response?.data?.detail || '').toLowerCase().includes('awaiting jira batch confirmation')
+      if (shouldRecover) {
+        try {
+          const refreshed = await recoverJiraGate()
+          const expectedAfterRecovery = getPendingJiraBatch(refreshed?.pending_interrupts)
+          if (refreshed && expectedAfterRecovery === batch) {
+            await syncToJiraBatch(currentProject.id, batch)
+            const updated = await getProject(currentProject.id)
+            setCurrentProject(updated)
+            await loadPreview()
+            return
+          }
+        } catch {
+          // Best-effort state refresh after a rejected batch.
+        }
+      }
       setError(`Failed to sync ${batch}: ${formatApiError(error)}`)
     } finally {
       setIsSyncing(false)
@@ -119,23 +151,22 @@ export function JiraStage() {
   }
 
   const batchStatus = currentProject?.jira_batch_status || preview?.batch_status || {}
+  const pendingJiraBatch = getPendingJiraBatch(currentProject?.pending_interrupts)
   const epicsDone = batchStatus.epics === 'done'
   const issuesDone = batchStatus.issues === 'done'
   const sprintsDone = batchStatus.sprints === 'done'
+  const canRunEpics = pendingJiraBatch === 'epics' && !epicsDone
+  const canRunIssues = pendingJiraBatch === 'issues' && epicsDone && !issuesDone
+  const canRunSprints = pendingJiraBatch === 'sprints' && issuesDone && !sprintsDone
+  const isLocked = !pendingJiraBatch && !currentProject?.stage5_done
+  const hasTasksAndSprints = (currentProject?.tasks?.length || 0) > 0 && (currentProject?.sprints?.length || 0) > 0
 
   return (
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle>Stage 5: Jira Integration</CardTitle>
-          <a
-            href="https://github.com/your-repo/blob/main/JIRA_SETUP.md"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-sm text-primary hover:underline"
-          >
-            Setup Guide →
-          </a>
+
         </div>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -162,47 +193,25 @@ export function JiraStage() {
           </div>
         )}
 
-        {/* Jira Config */}
-        <div className="space-y-3">
-          <h3 className="font-semibold">Jira Configuration</h3>
-          <div className="grid grid-cols-2 gap-3">
-            <Input
-              placeholder="yourdomain.atlassian.net"
-              value={jiraConfig.domain}
-              onChange={(e) => setJiraConfigState({ ...jiraConfig, domain: e.target.value })}
-            />
-            <Input
-              placeholder="you@example.com"
-              value={jiraConfig.email}
-              onChange={(e) => setJiraConfigState({ ...jiraConfig, email: e.target.value })}
-            />
-            <Input
-              placeholder={hasDetectedConfig ? 'API Token (only needed to override detected config)' : 'API Token'}
-              type="password"
-              value={jiraConfig.api_token}
-              onChange={(e) => setJiraConfigState({ ...jiraConfig, api_token: e.target.value })}
-            />
-            <Input
-              placeholder="Project Key (e.g., PROJ)"
-              value={jiraConfig.project_key}
-              onChange={(e) => setJiraConfigState({ ...jiraConfig, project_key: e.target.value.toUpperCase() })}
-            />
-          </div>
-          <div className="flex gap-2">
-            <Button onClick={handleSetConfig} size="sm">
-              {hasDetectedConfig ? 'Save Override Config' : 'Save Config'}
-            </Button>
-            <Button onClick={handleTestConnection} size="sm" variant="secondary" disabled={isTesting}>
-              {isTesting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Test Connection
-            </Button>
-          </div>
-          {testResult && (
-            <div className={`rounded-md p-3 ${testResult.success ? 'bg-green-50 text-green-800 dark:bg-green-950/40 dark:text-green-200' : 'bg-red-50 text-red-800 dark:bg-red-950/40 dark:text-red-200'}`}>
-              {testResult.message}
+        {/* Stage 4 Not Completed Warning */}
+        {!hasTasksAndSprints && !preview && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/80 dark:bg-amber-950/40">
+            <h4 className="font-semibold text-amber-900 dark:text-amber-100">⚠️ Stage 4 Not Completed</h4>
+            <p className="mt-2 text-sm text-amber-800 dark:text-amber-200">
+              Jira sync requires a completed sprint plan with tasks and sprints. Please complete Stage 4 (Sprint Planning) first.
+            </p>
+            <div className="mt-3 flex items-center gap-3">
+              <Button onClick={() => void recoverJiraGate()} disabled={isRecovering || isSyncing} variant="secondary" size="sm">
+                {isRecovering ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Resume from Stage 4
+              </Button>
+              <span className="text-xs text-amber-700 dark:text-amber-300">
+                This will approve the sprint plan and prepare Jira preview
+              </span>
             </div>
-          )}
-        </div>
+          </div>
+        )}
+
 
         {/* Preview */}
         {preview && (
@@ -234,14 +243,27 @@ export function JiraStage() {
         {preview && (
           <div className="space-y-3 border-t pt-4">
             <h3 className="font-semibold">Sync Batches (Confirm each step)</h3>
+            <div className="rounded-md border border-muted bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+              {pendingJiraBatch
+                ? `Awaiting Jira confirmation for '${pendingJiraBatch}'. Run this batch next.`
+                : 'Jira batch sync is currently locked. Re-open Stage 5 flow (approve sprint stage if needed) to continue.'}
+            </div>
+            {isLocked ? (
+              <div className="flex justify-start">
+                <Button onClick={() => void recoverJiraGate()} disabled={isRecovering || isSyncing} variant="secondary" size="sm">
+                  {isRecovering ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Resume Stage 5
+                </Button>
+              </div>
+            ) : null}
             <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-              <Button onClick={() => handleSyncBatch('epics')} disabled={isSyncing || epicsDone}>
+              <Button onClick={() => handleSyncBatch('epics')} disabled={isSyncing || !canRunEpics}>
                 {isSyncing && activeBatch === 'epics' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 {epicsDone ? 'Epics Created' : 'Create Epics'}
               </Button>
               <Button
                 onClick={() => handleSyncBatch('issues')}
-                disabled={isSyncing || !epicsDone || issuesDone}
+                disabled={isSyncing || !canRunIssues}
                 variant="secondary"
               >
                 {isSyncing && activeBatch === 'issues' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
@@ -249,7 +271,7 @@ export function JiraStage() {
               </Button>
               <Button
                 onClick={() => handleSyncBatch('sprints')}
-                disabled={isSyncing || !issuesDone || sprintsDone}
+                disabled={isSyncing || !canRunSprints}
                 variant="outline"
               >
                 {isSyncing && activeBatch === 'sprints' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}

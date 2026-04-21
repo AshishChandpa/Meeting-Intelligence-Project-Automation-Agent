@@ -45,6 +45,15 @@ class JiraClient:
                 time.sleep(wait)
                 continue
 
+            # Enhanced error logging for 400/403/404 errors
+            if response.status_code >= 400:
+                try:
+                    error_detail = response.json()
+                    error_msg = error_detail.get("errors", [{}])[0].get("message", str(error_detail))
+                    logger.error(f"[JIRA API] {method} {url} failed: {response.status_code} - {error_msg}")
+                except:
+                    logger.error(f"[JIRA API] {method} {url} failed: {response.status_code} - {response.text[:200]}")
+
             response.raise_for_status()
             return response.json() if response.content else {}
 
@@ -97,13 +106,26 @@ class JiraClient:
             },
             "issuetype": {"name": issue_type},
             "priority": {"name": priority},
-            "story_points": story_points,
-            "customfield_10016": story_points,  # story points field
         }
+
+        # Only add story points if they have a value
+        if story_points and story_points > 0:
+            fields["customfield_10016"] = story_points  # Story Points field (may not exist in Kanban)
+
         if epic_key:
             fields["customfield_10014"] = epic_key  # Epic Link field
 
-        result = self._request("POST", f"{self.base_url}/issue", json={"fields": fields})
+        try:
+            result = self._request("POST", f"{self.base_url}/issue", json={"fields": fields})
+        except Exception as e:
+            # If story points field is causing the error, retry without it
+            if story_points and "customfield_10016" in str(e):
+                logger.warning(f"[JIRA] Story Points field not available, retrying without it")
+                del fields["customfield_10016"]
+                result = self._request("POST", f"{self.base_url}/issue", json={"fields": fields})
+            else:
+                raise
+
         domain = self.base_url.split("/rest")[0].split("https://")[1]
         return {
             "key": result["key"],

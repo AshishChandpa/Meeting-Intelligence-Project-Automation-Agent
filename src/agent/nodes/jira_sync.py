@@ -142,10 +142,13 @@ def sync_to_jira_batch(state: PipelineState, batch: JiraBatch) -> dict:
 
     if batch == "epics":
         modules = sorted({task.get("module", "") for task in tasks if task.get("module")})
+        logger.info(f"[JIRA SYNC] Creating {len(modules)} epics for modules: {modules}")
         for module_name in modules:
             if module_name in epic_key_by_module:
+                logger.info(f"[JIRA SYNC] Skipping epic '{module_name}' - already exists with key {epic_key_by_module[module_name]}")
                 continue
             try:
+                logger.info(f"[JIRA SYNC] Creating epic: {module_name}")
                 epic = client.create_epic(
                     title=module_name,
                     description=f"Epic for {module_name} module",
@@ -171,6 +174,7 @@ def sync_to_jira_batch(state: PipelineState, batch: JiraBatch) -> dict:
                         error=str(e),
                     ).model_dump()
                 )
+                logger.error(f"[JIRA SYNC] Failed to create epic '{module_name}': {e}")
 
         batch_status = _batch_state(results)
         return {
@@ -181,12 +185,15 @@ def sync_to_jira_batch(state: PipelineState, batch: JiraBatch) -> dict:
         }
 
     if batch == "issues":
+        logger.info(f"[JIRA SYNC] Creating {len(tasks)} issues")
         for task in tasks:
             task_id = task.get("id", "")
             if task_id in jira_id_by_task:
+                logger.info(f"[JIRA SYNC] Skipping issue '{task.get('title')}' - already exists")
                 continue
             epic_key = epic_key_by_module.get(task.get("module", ""))
             try:
+                logger.info(f"[JIRA SYNC] Creating issue: {task['title']} (type: {task.get('type')}, epic: {epic_key})")
                 issue = client.create_issue(
                     title=task["title"],
                     description=task["description"],
@@ -216,6 +223,7 @@ def sync_to_jira_batch(state: PipelineState, batch: JiraBatch) -> dict:
                         error=str(e),
                     ).model_dump()
                 )
+                logger.error(f"[JIRA SYNC] Failed to create issue '{task.get('title')}': {e}")
 
         batch_status = _batch_state(results)
         return {
