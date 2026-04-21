@@ -73,6 +73,10 @@ class JiraClient:
 
     def create_epic(self, title: str, description: str) -> dict:
         """Create an Epic issue. Returns {key, id, url}."""
+        # SIMPLIFIED: Always create as Task for maximum compatibility
+        # (Kanban projects don't support Epic issue type)
+        logger.info(f"[JIRA] Creating Task for module: {title}")
+
         payload = {
             "fields": {
                 "project": {"key": self.project_key},
@@ -82,11 +86,13 @@ class JiraClient:
                     "version": 1,
                     "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}],
                 },
-                "issuetype": {"name": "Epic"},
-                "customfield_10011": title,  # Epic Name field
+                "issuetype": {"name": "Task"},
             }
         }
+
         result = self._request("POST", f"{self.base_url}/issue", json=payload)
+        logger.info(f"[JIRA] Task created successfully: {title} -> {result['key']}")
+
         return {
             "key": result["key"],
             "id": result["id"],
@@ -96,6 +102,9 @@ class JiraClient:
     def create_issue(self, title: str, description: str, issue_type: str,
                      priority: str, story_points: int, epic_key: str | None = None) -> dict:
         """Create a Story or Task issue linked to an Epic."""
+        # SIMPLIFIED: Skip custom fields for Kanban compatibility
+        logger.info(f"[JIRA] Creating issue: {title}")
+
         fields: dict = {
             "project": {"key": self.project_key},
             "summary": title,
@@ -104,27 +113,11 @@ class JiraClient:
                 "version": 1,
                 "content": [{"type": "paragraph", "content": [{"type": "text", "text": description}]}],
             },
-            "issuetype": {"name": issue_type},
+            "issuetype": {"name": "Task"},  # Always use Task for compatibility
             "priority": {"name": priority},
         }
 
-        # Only add story points if they have a value
-        if story_points and story_points > 0:
-            fields["customfield_10016"] = story_points  # Story Points field (may not exist in Kanban)
-
-        if epic_key:
-            fields["customfield_10014"] = epic_key  # Epic Link field
-
-        try:
-            result = self._request("POST", f"{self.base_url}/issue", json={"fields": fields})
-        except Exception as e:
-            # If story points field is causing the error, retry without it
-            if story_points and "customfield_10016" in str(e):
-                logger.warning(f"[JIRA] Story Points field not available, retrying without it")
-                del fields["customfield_10016"]
-                result = self._request("POST", f"{self.base_url}/issue", json={"fields": fields})
-            else:
-                raise
+        result = self._request("POST", f"{self.base_url}/issue", json={"fields": fields})
 
         domain = self.base_url.split("/rest")[0].split("https://")[1]
         return {

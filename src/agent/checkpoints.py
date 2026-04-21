@@ -84,9 +84,9 @@ class MongoPersistentCheckpointer(InMemorySaver):
     def _persist_thread(self, thread_id: str) -> None:
         self._ensure_thread_loaded(thread_id)
         storage_doc: dict[str, dict[str, Any]] = {}
-        for checkpoint_ns, checkpoints in self.storage.get(thread_id, {}).items():
+        for checkpoint_ns, checkpoints in list(self.storage.get(thread_id, {}).items()):
             ns_doc: dict[str, Any] = {}
-            for checkpoint_id, saved in checkpoints.items():
+            for checkpoint_id, saved in list(checkpoints.items()):
                 checkpoint, metadata, parent_checkpoint_id = saved
                 ns_doc[checkpoint_id] = {
                     "checkpoint": _encode_typed(checkpoint),
@@ -96,7 +96,7 @@ class MongoPersistentCheckpointer(InMemorySaver):
             storage_doc[checkpoint_ns] = ns_doc
 
         writes_doc: dict[str, list[dict[str, Any]]] = {}
-        for outer_key, entries in self.writes.items():
+        for outer_key, entries in list(self.writes.items()):
             current_thread_id, checkpoint_ns, checkpoint_id = outer_key
             if current_thread_id != thread_id:
                 continue
@@ -109,11 +109,11 @@ class MongoPersistentCheckpointer(InMemorySaver):
                     "value": _encode_typed(value),
                     "task_path": task_path,
                 }
-                for (task_id, index), (task_id, channel, value, task_path) in entries.items()
+                for (task_id, index), (task_id, channel, value, task_path) in list(entries.items())
             ]
 
         blobs_doc: list[dict[str, Any]] = []
-        for key, value in self.blobs.items():
+        for key, value in list(self.blobs.items()):
             current_thread_id, checkpoint_ns, channel, version = key
             if current_thread_id != thread_id:
                 continue
